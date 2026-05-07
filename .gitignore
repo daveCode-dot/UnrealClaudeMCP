@@ -35,3 +35,10 @@ desktop.ini
 
 # Local config (machines may differ; users copy from examples/.mcp.json.example)
 .mcp.json
+
+# Project-local Claude Code config (don't leak local agent settings into the public repo)
+.claude/
+
+# Belt-and-suspenders: never accept the private HD Media plugin folder if it ends up nested here
+HDMediaUnrealMCP/
+HDMediaCamPlugin/
