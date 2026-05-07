@@ -37,7 +37,8 @@ public class UnrealClaudeMCP : ModuleRules
         {
             "InputCore",
             "Projects",
-            "PropertyEditor"
+            "PropertyEditor",
+            "LevelEditor"
         });
     }
 }

@@ -33,6 +33,9 @@ desktop.ini
 # Logs
 *.log
 
+# Local tooling indexes (not part of the plugin)
+ruvector.db
+
 # Local config (machines may differ; users copy from examples/.mcp.json.example)
 .mcp.json
 
