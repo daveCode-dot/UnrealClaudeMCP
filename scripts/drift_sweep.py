@@ -24,12 +24,19 @@ Exit codes:
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Union
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Canonical values can be int (counts) or str (version strings). The scan
+# loop branches on isinstance(int) to know whether to coerce match.group(1)
+# before comparing.
+CanonicalValue = Union[int, str]
 
 # Files that are expected to reflect the current canonical numbers.
 # Anything not in this list (HANDOFF, superpowers plans, archived session
@@ -73,6 +80,19 @@ PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"remaining\s+(\d+)\s+[–—\-]+\s", re.IGNORECASE), "synthetic_tools"),
     (re.compile(r"\b(\d+)\s+pytest\s+cases?\b", re.IGNORECASE), "pytest_cases"),
     (re.compile(r"#\s*(\d+)\s+tests,", re.IGNORECASE), "pytest_cases"),
+    # UE engine minor (e.g., "5.7"). The negative lookahead `(?!\.\d)`
+    # prevents matching "5.7" inside "5.7.4" -- the patch-level "Tested on"
+    # version in README is intentionally allowed to drift independently of
+    # the EngineVersion constraint in the .uplugin manifest.
+    (re.compile(r"\bUE\s+(\d+\.\d+)(?!\.\d)"), "ue_engine_minor"),
+    (re.compile(r"\bUnreal\s+Engine\s+(\d+\.\d+)(?!\.\d)"), "ue_engine_minor"),
+    # Plugin version. Anchored to specific phrasings ("Latest release",
+    # "Current version", "plugin version") so generic historical version
+    # mentions (e.g., "v0.3.0+ shared modules" in ARCHITECTURE.md) are not
+    # caught and forced into drift.
+    (re.compile(r"latest\s+release[^v\n]*v(\d+\.\d+\.\d+)", re.IGNORECASE), "plugin_version"),
+    (re.compile(r"current\s+version[^v\n]*v(\d+\.\d+\.\d+)", re.IGNORECASE), "plugin_version"),
+    (re.compile(r"plugin\s+version[^v\n]*v(\d+\.\d+\.\d+)", re.IGNORECASE), "plugin_version"),
 ]
 
 
@@ -127,6 +147,53 @@ def _read_live_pytest_count() -> int:
     )
 
 
+def _read_uplugin_versions() -> tuple[str, str]:
+    """Return (plugin_version, ue_engine_minor) from the .uplugin manifest.
+
+    The .uplugin file is JSON, so we parse it cleanly rather than regexing
+    the source. ``VersionName`` is the plugin's user-facing version (e.g.
+    "0.9.1"); ``EngineVersion`` is the engine compatibility constraint (e.g.
+    "5.7.0") -- the scanner enforces the MINOR portion ("5.7") because
+    individual docs use the minor form interchangeably with the patch form
+    (e.g. "UE 5.7 plugin" in AGENTS.md, "UE 5.7.4 / Windows 11" in README's
+    "Tested on" row). Forcing every "UE 5.7" mention to track patch-level
+    bumps would create unwanted churn.
+
+    Raises RuntimeError with a caller-actionable message if the .uplugin is
+    missing or malformed -- callers should never silently fall back to
+    stale defaults.
+    """
+    uplugin_path = REPO_ROOT / "UnrealClaudeMCP" / "UnrealClaudeMCP.uplugin"
+    if not uplugin_path.exists():
+        raise RuntimeError(
+            f"Cannot find UnrealClaudeMCP.uplugin at {uplugin_path}. If the "
+            "module was renamed or moved, update _read_uplugin_versions() "
+            "to match the new path."
+        )
+    try:
+        data = json.loads(_read_text_lenient(uplugin_path))
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"UnrealClaudeMCP.uplugin is not valid JSON: {e}"
+        ) from e
+    version_name = data.get("VersionName")
+    engine_version = data.get("EngineVersion")
+    if not isinstance(version_name, str) or not isinstance(engine_version, str):
+        raise RuntimeError(
+            ".uplugin must declare both VersionName and EngineVersion as "
+            "strings; got "
+            f"VersionName={version_name!r}, EngineVersion={engine_version!r}."
+        )
+    # Strip the patch component from EngineVersion (5.7.0 -> 5.7). Docs use
+    # the minor form; the patch is reserved for the README "Tested on" row.
+    minor_match = re.match(r"(\d+\.\d+)", engine_version)
+    if not minor_match:
+        raise RuntimeError(
+            f"EngineVersion '{engine_version}' does not start with a major.minor pair."
+        )
+    return version_name, minor_match.group(1)
+
+
 def _read_text_lenient(path: Path) -> str:
     """Read a tracked doc with encoding-tolerance.
 
@@ -141,19 +208,27 @@ def _read_text_lenient(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
 
 
-def canonical_numbers() -> dict[str, int]:
-    """Build the canonical-numbers dict that PATTERNS validate against."""
+def canonical_numbers() -> dict[str, CanonicalValue]:
+    """Build the canonical dict that PATTERNS validate against.
+
+    Values are a mix of int (counts) and str (version strings); the scan
+    loop branches on isinstance(int) to decide whether to int-coerce the
+    matched group before comparison.
+    """
     cpp, syn = _read_conftest_constants()
+    plugin_version, ue_engine_minor = _read_uplugin_versions()
     return {
         "tools": cpp + syn,
         "cpp_handlers": cpp,
         "synthetic_tools": syn,
         "pytest_cases": _read_live_pytest_count(),
+        "plugin_version": plugin_version,
+        "ue_engine_minor": ue_engine_minor,
     }
 
 
-def scan(canonical: dict[str, int]) -> list[str]:
-    """Return one finding string per stale number across the scan list."""
+def scan(canonical: dict[str, CanonicalValue]) -> list[str]:
+    """Return one finding string per stale value across the scan list."""
     findings: list[str] = []
     for relpath in SCAN_FILES:
         path = REPO_ROOT / relpath
@@ -163,12 +238,15 @@ def scan(canonical: dict[str, int]) -> list[str]:
         for lineno, line in enumerate(lines, start=1):
             for pattern, key in PATTERNS:
                 for match in pattern.finditer(line):
-                    found = int(match.group(1))
                     expected = canonical[key]
+                    raw = match.group(1)
+                    found: CanonicalValue = (
+                        int(raw) if isinstance(expected, int) else raw
+                    )
                     if found != expected:
                         findings.append(
                             f"{relpath}:{lineno}: '{match.group(0).strip()}' "
-                            f"({key}={found}, expected {expected})"
+                            f"({key}={found!r}, expected {expected!r})"
                         )
     return findings
 
@@ -182,7 +260,9 @@ def main() -> int:
             f"tools={canonical['tools']}, "
             f"cpp_handlers={canonical['cpp_handlers']}, "
             f"synthetic_tools={canonical['synthetic_tools']}, "
-            f"pytest_cases={canonical['pytest_cases']})."
+            f"pytest_cases={canonical['pytest_cases']}, "
+            f"plugin_version={canonical['plugin_version']}, "
+            f"ue_engine_minor={canonical['ue_engine_minor']})."
         )
         return 0
     print("doc-drift sweep: drift detected.")
