@@ -19,10 +19,16 @@ from pathlib import Path
 
 # Patterns that must NOT appear in any tracked file. Case-sensitive.
 # When adding here, also consider whether existing matches need cleanup.
+#
+# Patterns are constructed at runtime via string concatenation so the
+# literal sensitive value does NOT appear as a Python string constant
+# in source. This makes the file safe to pass through future
+# `git filter-repo --replace-text` runs (which would otherwise rewrite
+# any literal match in this file too -- the bug PR #107 fixes).
 FORBIDDEN_PATTERNS = [
-    # Windows username — replace with %USERPROFILE% (PowerShell), $HOME
-    # (Bash), or <USERNAME> (placeholder in prose).
-    "<USERNAME>",
+    # Windows username — replace any occurrence with %USERPROFILE%
+    # (PowerShell), $HOME (Bash), or a doc placeholder.
+    "NI" + "NOH",
 ]
 
 # Tracked files allowed to contain the forbidden patterns. The test file
