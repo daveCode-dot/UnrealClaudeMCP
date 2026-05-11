@@ -29,7 +29,7 @@ Requires a running UE 5.7 editor with the UnrealClaudeMCP plugin loaded on
 non-zero on regression.
 
 ```bash
-python examples/smoke_test.py                          # 7 default checks
+python examples/smoke_test.py                          # 15 default checks
 python examples/smoke_test.py --bp /Game/Blueprints/BP_X.BP_X
 python examples/smoke_test.py --widget /Game/UI/WBP_SmokeTest.WBP_SmokeTest
 python examples/smoke_test.py --level /Game/Maps/MyMap
