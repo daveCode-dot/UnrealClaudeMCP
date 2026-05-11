@@ -868,3 +868,47 @@ Both PRs went DIRTY when Phase-2's force-push rewrote main's history. The contri
 - **Maintainer-personal workflow notes** live outside the repo. Next session needs to read them out-of-band to know which inference backends to dispatch against. The naming-policy applies regardless of where the content lives.
 
 **Eighth consecutive closing-note.** Cadence: every session ships a feature/chore PR + a HANDOFF append. Next-session pickup is mechanical from this doc + the at-a-glance at the top + the trap-table.
+
+**Session 2026-05-12 (tooling tier — ensemble panel + CI drift guard):**
+
+Light feature session. No new tools; no C++ surface touched. Instead, two infrastructure investments that compound across every future session: (1) expanded the model-panel surface so the workflow can route cheap mechanical tasks off the heavyweight pathways, and (2) added a mechanical doc-drift guard so the README-vs-conftest drift class can never silently regress again.
+
+**What shipped (3 PRs, all merged):**
+
+- **PR #110** — `docs(readme): bump bridge test count 201 -> 202`. Single-line README fix flagged by a doc-drift sweep at session start. Gemini-code-assist's review during the PR caught a second drift in `tests/README.md` that the initial sweep had missed (`19 tools` and `71 tests` — both pre-rewrite). Same-PR follow-up `6c8d178` bumped both to current numbers. Reinforces the directive: **Gemini-code-assist is an ensemble member, not a competitor to pytest**; its review caught what the human grep missed.
+- **PR #111** — `ci(tests): skip pytest matrix on docs-only PRs`. New `detect-changes` job diffs PR base vs HEAD; the four pytest matrix jobs gate every code-running step on `code_changed == 'true'`. Docs-only PRs now finish each matrix job in ~5s (checkout + skip notice) instead of ~25s (full pip install + pytest). The four check names (`pytest (Python 3.11)` … `3.14`) are preserved so the ruleset required-status-check is still satisfied via green-but-skipped jobs. Docs allowlist: `**.md`, `docs/**`, `LICENSE`, `.github/ISSUE_TEMPLATE/**`.
+- **PR #112** — `feat(scripts): drift_sweep.py + CI-enforced doc-drift guard`. Mechanical scanner that reads canonical counts from authoritative sources (`tests/conftest.py` constants + live `pytest --collect-only`) and verifies every high-traffic doc mirrors them. No LLM dependency. Companion `tests/test_drift_sweep.py` runs the scanner inside pytest, so the existing required-status-check enforces it automatically. **Scope:** scans `README.md`, `CLAUDE.md`, `AGENTS.md`, `tests/README.md`, `docs/INSTALLATION.md`, `docs/RESTART-RECOVERY.md`, `.github/copilot-instructions.md`. **Deliberately out of scope:** `HANDOFF.md` and `docs/superpowers/plans/**` — both preserve sprint chronology and contain frozen historical numbers.
+
+**Ensemble panel expansion (workflow-private, not committed):**
+
+The cross-agent capability matrix from session 6 covered project-context propagation. This session adds an analogous expansion at the model layer: a thin MCP shim (built off-repo per the naming policy) makes locally-installed OSS models callable through the same tool interface as the cloud LLM panel. Quality-calibration runs against the existing drift-sweep task surfaced a tiered profile:
+
+- **Tier 1 (cloud reasoning):** structured-output tasks — reliable on multi-exhibit prompts.
+- **Tier 2 (local mid-size):** matched Tier 1 quality on the same task class with the trade-off of partial-offload latency on consumer GPUs.
+- **Tier 3 (local small):** binary classification and simple Q&A only — small models return empty output on complex multi-exhibit structured prompts (parameter-budget ceiling, not a wiring bug).
+
+The shim itself lives outside the repo (privacy policy is in force; runtime + model names are workflow infra). Future sessions can route cheap mechanical sub-tasks (doc-drift binary triage, manifest sanity-checks) to Tier 3, structured ensemble votes to Tier 2, and heavy synthesis to Tier 1, without exhausting Codex quota on work that doesn't need a coding agent.
+
+**Two external PRs (#102, #105) — no contributor activity since prior session.** Contributor's last push was 2026-05-11 ~20:07; maintainer's rebase-instruction comments posted 20:38 the same day. As of this session both still `DIRTY` / `CONFLICTING`. Branch heads still on pre-rewrite commits. The maintainer's policy this session: **don't track passively** — the contributor will follow up via PR comments when ready, and the cherry-pick backup path remains pre-authorized in the prior closing-note.
+
+**New trap-table entries from this session:**
+
+- **The doc-drift class is recurring, not one-off.** Every tool/test addition has shipped without bumping every README that mirrors the old count (PRs #92, #110 in this lineage). `scripts/drift_sweep.py` now mechanically enforces the bump; any PR that adds a test surface bumps the live pytest count by 1, which means README.md + tests/README.md must update in the SAME commit. The scanner will fail CI otherwise. Pair the count update with the test/tool addition every time.
+- **Gemini-code-assist's review catches what manual grep misses.** This session's first drift sweep missed `tests/README.md` entirely (not in the exhibit list passed to the LLM second-eye). Gemini caught it independently because its review enumerates files itself rather than trusting the caller's exhibit list. Lesson for future drift-sweep work: **the scanner must enumerate exhibits, never trust the caller.** This is exactly the design of `drift_sweep.py` — the scan list is hard-coded, not user-supplied.
+- **GitHub Actions path-filter + required-status-check has a known interaction trap.** Using `paths-ignore:` at the trigger level skips the jobs entirely → required checks never report → ruleset blocks the PR with "expected check missing." The skip-inside-job pattern (used in PR #111) avoids that: each matrix job still runs to completion and reports its check name; the pytest step is the only thing that's conditionally skipped. Document this if the workflow is ever rewritten.
+- **MCP server auto-discovery on Claude Code restart works as advertised.** Placing a server scaffold under `~/.claude/mcp-servers/<name>/` plus a `.mcp.json` workspace stanza is sufficient — no explicit `claude mcp add` invocation needed. Confirmed end-to-end this session: cold restart → tools appeared in the deferred-tool list with the exact names declared in the server's `@mcp.tool()` decorators.
+- **Small-model output collapse on complex prompts is a model-size ceiling, not a wiring bug.** Calibration this session showed an 8B local model returning empty content on a multi-exhibit structured-output prompt even with generous `max_tokens` and `temperature`. The model burns its parameter budget on exhibit-parsing + reasoning, leaving no budget for content generation. Mid-size local models (27-33B) and cloud models cleared the same prompt without issue. **Reserve small local models for binary triage; route structured-output tasks to ≥27B.**
+- **The drift sweep is self-bootstrapping.** Adding `tests/test_drift_sweep.py` bumps the live pytest count from 202 → 203, which the scanner flags against the not-yet-bumped README. The fix: bump both READMEs in the SAME commit that adds the test. The PR captures this paired update as a worked example — the exact discipline every future test-adding PR will follow.
+
+**Tool / test totals at session end:**
+- 75 tools (64 C++ handlers + 11 bridge-side synthetic tools) — unchanged.
+- pytest: 202 → 203 passing (+1 test: `test_drift_sweep.py::test_no_doc_drift`).
+- main HEAD: `558a32f` end of PR #112 merge; this closing-note PR adds one more merge on top.
+- Branch protection ruleset: `16243165`, active, admin-bypass enabled. CI matrix now scales with PR class — docs-only PRs ~5s, code PRs ~25s.
+
+**What to watch in next session:**
+
+- **`scripts/drift_sweep.py` is the durable artefact from this session.** Adding a new pattern is a one-line edit to the `PATTERNS` list at the top of the file. If a future doc category goes stale (e.g., a new badge in README, a model-version reference in INSTALLATION.md), add the regex + canonical-key and the scanner picks it up automatically.
+- **PRs #102 + #105 still pending contributor rebase.** Maintainer policy: don't poll — the contributor will surface activity through PR comments. Cherry-pick path remains pre-authorized.
+- **The ensemble panel pattern transfers.** Any contributor with a local OSS LLM runtime can mirror the MCP-shim approach from this session and get the same Tier 2/3 panel locally; the privacy policy keeps the runtime/model names off-repo but the SHAPE (OpenAI-compat client + dynamic `list_models`) is generic and reusable.
+- **Ninth consecutive closing-note.** Cadence is now load-bearing — every session ships a feature/chore PR + a HANDOFF append, and the at-a-glance + trap-table at the top of this doc + the latest closing-note is the entire "what's going on" pickup surface for the next agent.
