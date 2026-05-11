@@ -963,3 +963,69 @@ Continuation of the same calendar day's tooling work. The user retired for the n
 - **External PRs #102 + #105 still pending.** Maintainer policy unchanged: don't poll, contributor surfaces activity through PR comments, cherry-pick path pre-authorized.
 - **Scanner pattern list is now substantial (~22 patterns).** Future readability win: group patterns by canonical-key class in the source (e.g. a separate list per key with a comment header). Out of scope for now; the dispatch loop already handles a flat list cleanly.
 - **Tenth consecutive closing-note.** Two appended in the same calendar day — first for the attended window, second for the autonomous extension. The cadence scales sub-daily when the work fan-outs do.
+
+**Session 2026-05-12 (autonomous-extension #2 — David's PRs cherry-picked + live-UE attempt):**
+
+User authorized broader scope late in the day ("read David's PRs #102/#105 and you decide ... force-delete the 9 abandoned branches ... if you wanna make any tests on Unreal, you can go and open it ... the important thing, you have to deliver a high quality output"). Three workstreams shipped before this closing-note appends an eleventh consecutive entry; one workstream attempted-then-aborted with documented findings.
+
+**What shipped (4 PRs):**
+
+- **PR #120** — cherry-pick of David's #102 (`feat(bridge): add compile_mod_pak_direct synthetic`) onto current main. David's three commits preserved verbatim via `git cherry-pick`; the count-bump commit was rewritten because main had advanced (his target 203, current 209). Authorship preserved; David's name is on every substantive commit in the merged history.
+- **PR #121** — cherry-pick of David's #105 (`fix(bridge): align compile_mod_pak with defensive input validation`) onto post-#120 main. One conflict in `tests/test_bridge.py` (his hardening tests collided with the #120 schema test that landed minutes earlier) was resolved by placing both blocks sequentially. Same authorship-preserving cherry-pick pattern.
+- **David's #102 and #105 originals** were closed with respectful "superseded by" comments linking to the v2 PRs, explicit acknowledgement that the rebase friction was on the maintainer side (twice-shifted main during in-flight CI work), and gratitude for the substantive work (the Conan Exiles Enhanced Dev Kit motivation, the boundary TYPE-vs-FORM analysis, the responsive Gemini-review iteration).
+- **Branch cleanup** — the 9 abandoned local feature branches kept from the prior session were force-deleted via `git branch -D` after explicit user go-ahead. Down to 3 local branches (main + current work).
+
+**What was attempted but aborted (UE live smoke test):**
+
+User authorized opening UE 5.7 and running live tests: "if you wanna make any tests on Unreal, you can go and open it. It's on the f driver." UE 5.7 was launched via `Start-Process` against the host project at `F:/ax plug in/HDMediaVirtualStudio/HDMediaVirtualStudio.uproject`. Process spawned cleanly (PID 33088, 2.85GB working set, 150 threads, Responding=True). Polled 127.0.0.1:18888 for 9 minutes; port never bound, CPU usage 37s in 9min = 6.8% one core = idle, no shader-compile workers active, no log writes to `Saved/Logs/HDMediaVirtualStudio.log` (last write was 2026-05-10). Strong inference: a "rebuild missing modules" or "recompile plugin" modal dialog appeared on startup and was blocking on user input. Dismissing the modal would require either keyboard/mouse via the computer-use MCP server (which requires live `request_access` approval that a sleeping user cannot grant) or a pre-build of the plugin binaries against the current UE 5.7 toolchain. Killed UE cleanly (`Stop-Process -Id 33088 -Force`); the poll task was terminated via `TaskStop`. No assets were modified, no project state changed.
+
+**Multi-agent dispatch utilization this extension:**
+
+| Agent | Used | Tasks |
+|---|---|---|
+| Opus (me) | ✓ | director, cherry-pick, conflict resolution, integration |
+| Codex CLI | — | held (no C++ work this extension) |
+| Copilot CLI | — | held (audits already done in prior windows; no new audit surface) |
+| Gemini-code-assist | ✓ | passive auto-review on PRs #120 + #121 |
+| Local + cloud LLM panel | — | not needed (mechanical work) |
+
+**New trap-table entries from this session-extension:**
+
+- **Cherry-pick is the load-bearing fallback for external PRs after fast-moving main.** PR #120 and #121 both rebased fine onto an earlier main, then conflicted with subsequent autonomous-window PRs that touched the same count-bump lines. The rebase-then-conflict spiral can repeat indefinitely; cherry-picking onto a fresh branch off CURRENT main + re-writing the count-bump locally + crediting via `Co-Authored-By` + closing the original with a respectful "superseded by" comment is a closed-loop solution that doesn't require the contributor to round-trip. Use this pattern whenever main has advanced through count-bumping PRs since a contributor's rebase, regardless of whether the contributor is responsive — it's faster + lower-friction for both sides.
+- **The `git merge-tree origin/main pr<N>` dry-run is the right pre-flight check.** Before committing to a cherry-pick path, run `git merge-tree` to see whether `gh pr merge` would succeed cleanly or hit conflicts. Saved ~15 minutes of dead-end work-attempts on both PRs this session.
+- **`tests/test_bridge.py` is a conflict hot-spot for parallel test-adding PRs.** Both PR #120's `test_compile_mod_pak_direct_is_synthetic` and PR #105's hardening tests insert new functions immediately after `test_compile_mod_pak_is_synthetic` — same insertion point, line-level conflict. Future test-adding PRs touching the same area should expect this and resolve by interleaving rather than fighting the merge. The functions are orthogonal; ordering doesn't matter beyond grouping by tool.
+- **Live UE smoke test is NOT fully autonomous on a sleeping-user machine.** The launch is autonomous (`Start-Process` works without user intervention), but the "rebuild missing modules" modal that UE shows when plugin binaries are stale against the current engine toolchain requires desktop input. Computer-use MCP can drive desktop input but requires `request_access` approval that the user must grant interactively. **Workaround for next attended session:** pre-build the plugin binaries (cold compile via `Build.bat` from the engine's `Engine/Build/BatchFiles/`) BEFORE letting the autonomous loop touch live UE; then UE launches cleanly without the modal. Alternatively: have the user grant computer-use access for `UnrealEditor` at session start so the modal can be auto-dismissed.
+
+**Cumulative session 2026-05-12 totals (attended + 3 autonomous extensions combined):**
+
+| PR | Title | Class | Window |
+|---|---|---|---|
+| #110 | docs(readme): bump bridge test count 201 → 202 | drift fix | attended |
+| #111 | ci(tests): skip pytest matrix on docs-only PRs | CI speedup | attended |
+| #112 | feat(scripts): drift_sweep.py + CI-enforced doc-drift guard | new tooling | attended |
+| #113 | docs(handoff): closing note + path-filter live validation | session log | attended |
+| #114 | fix(drift-sweep): widen coverage + harden pytest output parsing | scanner hardening | attended |
+| #115 | fix(bridge): defensive path-shape validation in bulk_delete_assets | bridge hardening | autonomous #1 |
+| #116 | feat(drift-sweep): enforce plugin version + UE engine minor across docs | scanner extension | autonomous #1 |
+| #117 | docs(handoff): closing note for autonomous extension #1 | session log | autonomous #1 |
+| #118 | docs(tests): bump stale smoke_test default-check count 7 → 15 | drift fix | autonomous #2 |
+| #119 | fix(smoke): step() catches all exceptions, not just SmokeFailure | smoke test hardening | autonomous #2 |
+| #120 | feat(bridge): compile_mod_pak_direct synthetic (cherry-pick of #102) | external integration | autonomous #3 |
+| #121 | fix(bridge): align compile_mod_pak with defensive input validation (cherry-pick of #105) | external integration | autonomous #3 |
+
+Plus David's #102 and #105 closed with full credit + co-authorship preserved on the merged commits.
+
+**Tool / test totals at end of this extension:**
+- 76 tools (64 C++ handlers + 12 bridge-side synthetic tools).
+- pytest: 208 → 214 passing (+1 from #120's `compile_mod_pak_direct` schema test, +5 from #121's compile_mod_pak hardening tests).
+- main HEAD: `fd7c2b1` end of PR #121 merge; this closing-note PR adds one more merge on top.
+- Drift sweep coverage: 6 canonical signals across 8 scanned files. Clean on current main.
+- Branch protection ruleset: `16243165`, active, admin-bypass enabled. 11 PRs merged through ruleset today; zero failures.
+
+**What to watch in next session:**
+
+- **Plugin binaries need pre-build before any autonomous live-UE work.** The host project at `F:/ax plug in/HDMediaVirtualStudio/` has the plugin source installed but the .dll/.pdb binaries appear stale against the current engine build. Easiest fix: from a Developer Command Prompt, run `F:/UE_5.7/Engine/Build/BatchFiles/Build.bat UnrealClaudeMCPEditor Win64 Development -Project="F:/ax plug in/HDMediaVirtualStudio/HDMediaVirtualStudio.uproject" -WaitMutex`. Once the binaries are current, `Start-Process UnrealEditor.exe <uproject>` should boot to a working editor with the TCP server bound on 127.0.0.1:18888 without modal intervention.
+- **Computer-use MCP requires session-start access grant if autonomous UE-driving is desired.** Calling `request_access` once with `apps=["UnrealEditor"]` at the start of any session that might need live UE driving sidesteps the sleeping-user blocker.
+- **External-contributor cherry-pick playbook is now battle-tested.** Future incoming PRs (David's or others') that go stale during in-flight main work can land via the same pattern: `git merge-tree` dry-run → cherry-pick onto fresh branch → re-write any count-bump commit → preserve authorship via `Co-Authored-By` → respectful "superseded by" comment on the original → close. ~30 minutes per PR end-to-end.
+- **All session-2026-05-12 deferred bridge-audit findings still pending.** Specifically: `get_camera_transform` marker-helper refactor, `_run_marker_pattern` exception-class split, `compile_mod_pak` vs `screenshot_actor` upstream-error-code alignment. All require an attended session because they touch tested envelope shapes.
+- **Eleventh consecutive closing-note.** Three appended in the same calendar day for the same project. The cadence is no longer load-bearing — it's the project's documentation rhythm. Morning-pickup is mechanical from this closing-note + the top-of-file at-a-glance.
