@@ -912,3 +912,54 @@ The shim itself lives outside the repo (privacy policy is in force; runtime + mo
 - **PRs #102 + #105 still pending contributor rebase.** Maintainer policy: don't poll — the contributor will surface activity through PR comments. Cherry-pick path remains pre-authorized.
 - **The ensemble panel pattern transfers.** Any contributor with a local OSS LLM runtime can mirror the MCP-shim approach from this session and get the same Tier 2/3 panel locally; the privacy policy keeps the runtime/model names off-repo but the SHAPE (OpenAI-compat client + dynamic `list_models`) is generic and reusable.
 - **Ninth consecutive closing-note.** Cadence is now load-bearing — every session ships a feature/chore PR + a HANDOFF append, and the at-a-glance + trap-table at the top of this doc + the latest closing-note is the entire "what's going on" pickup surface for the next agent.
+
+**Session 2026-05-12 (autonomous overnight extension — bridge hardening + scanner extension):**
+
+Continuation of the same calendar day's tooling work. The user retired for the night and granted full autonomy ("you decide and continue the workflow ... you're the boss now"). The three-hour autonomous window before the PC auto-sleeps was spent on a clearly-scoped pipeline that compounds the morning's investments without touching anything the user had explicitly fenced (external contributor PRs, the unrunnable local supermodel on disk, history rewrites). Two more PRs merged before this closing-note appends a tenth consecutive entry.
+
+**What shipped autonomously (2 PRs):**
+
+- **PR #115** — `fix(bridge): defensive path-shape validation in bulk_delete_assets`. The bulk synthetic now rejects two suspicious path patterns BEFORE forwarding to `delete_asset`: NUL bytes anywhere in the path, and `..` as a path SEGMENT (segment-aware so `/Game/My..Asset` still passes; only `/Game/Maps/../Secrets`-style traversal is blocked). Three new tests cover the rejection cases plus the negative case. Threat-model framing: the bridge is local-trusted-editor only, so this is defense-in-depth rather than a vulnerability fix — but the rejection turns a confusing downstream UE-side error into a clean upstream `-32602` with the offending `paths[<i>]` index in the message.
+
+- **PR #116** — `feat(drift-sweep): enforce plugin version + UE engine minor across docs`. Adds two new canonical signals to the scanner: `plugin_version` (pulled live from `UnrealClaudeMCP/UnrealClaudeMCP.uplugin` `VersionName`) and `ue_engine_minor` (from the same file's `EngineVersion`, with the patch component stripped). Patterns are deliberately anchored so historical mentions and patch-level "Tested on" callouts don't trip — only current-state references are enforced. Two new unit tests (`test_uplugin_versions_match_declared_constants`, `test_canonical_dict_contains_all_pattern_keys`) provide direct coverage on top of the existing integration smoke test. CanonicalValue type alias documents the now-mixed `int | str` shape of the canonical-values dict.
+
+**Multi-agent dispatch cycle exercised twice during the autonomous window:**
+
+- The bridge audit (Phase 2 of the night's plan) ran an adversarial second-eye review of the 11 synthetic tools, looking specifically for input-validation gaps, error-code inconsistency, and marker-pattern hand-rolling. **11 findings surfaced**, severity-tagged. Triage discipline kept the acceptance rate honest: 1 finding shipped (bulk_delete path validation), several findings deferred because they conflicted with the contributor's open #102/#105 territory, and the marker-pattern-helper-refactor finding deferred as too-risky-for-unattended-autonomy (the `get_camera_transform → set_camera_transform` envelope coupling means a refactor must touch two synthetics in lockstep, and the existing tests encode the current envelope shape). Net acceptance: ~10%, which is correct — most findings were defensive-only or pre-claimed by external work.
+
+- The scanner extension (Phase 3) was self-directed and didn't need a dispatch — the `.uplugin` source format and the doc allowlist were both already known. Implementation took longer than the audit ($\approx$ 30 minutes of Edit/Bash cycles) but with no chance of contention, since it touched an exclusively-Opus-owned surface (the morning's scanner script).
+
+**New trap-table entries from this session-extension:**
+
+- **The drift sweep is self-bootstrapping (proof point #2).** PR #115 added 3 tests (`203 → 206`) and PR #116 added 2 tests (`206 → 208`); both PRs included the `README.md` + `tests/README.md` bumps in the same commit because the scanner failed locally otherwise. This is exactly the paired-update discipline the scanner was designed to force — and now there are TWO worked examples in the commit history, not just the original from PR #112.
+- **Marker-pattern refactor is a coordinated-change hazard.** `synthetic_set_camera_transform` calls `synthetic_get_camera_transform(0, {})` internally and parses its envelope at lines 1329-1336; refactoring `get_camera_transform` to use `_run_marker_pattern` would silently break `set_camera_transform`'s envelope-parsing path. Don't touch one without touching the other in the same PR, and don't ship that refactor unattended.
+- **PATTERNS keys must be guarded by a unit test.** A typo in a pattern's canonical-key string would surface only when that pattern matches a real document and the scanner crashes mid-scan with `KeyError`. The new `test_canonical_dict_contains_all_pattern_keys` catches the gap at collection time. Same trick applies to ANY future scanner that grows a similar dispatch table.
+- **Adversarial-review acceptance rate is the right calibration signal.** Two dispatches this session both landed at ~10-30% acceptance, which is healthy. A 100% acceptance rate would mean the director isn't filtering enough (or the prompt was too narrow); a 0% acceptance rate would mean the prompt didn't reach the right surface. Aim for findings that include some defensible rejections and at least one genuine improvement.
+- **Defer triggers are the autonomy-safety net.** During the bridge audit, several findings looked tempting but conflicted with the contributor's open PR territory OR required coordinated multi-file changes; both classes were correctly deferred. The autonomous window's risk profile is low when the agent is willing to NOT ship when uncertain.
+
+**Cumulative session 2026-05-12 totals (attended + autonomous combined):**
+
+| PR | Title | Class |
+|---|---|---|
+| #110 | docs(readme): bump bridge test count 201 → 202 | drift fix |
+| #111 | ci(tests): skip pytest matrix on docs-only PRs | CI speedup |
+| #112 | feat(scripts): drift_sweep.py + CI-enforced doc-drift guard | new tooling |
+| #113 | docs(handoff): closing note + path-filter live validation | session log |
+| #114 | fix(drift-sweep): widen coverage + harden pytest output parsing | scanner hardening |
+| #115 | fix(bridge): defensive path-shape validation in bulk_delete_assets | bridge hardening |
+| #116 | feat(drift-sweep): enforce plugin version + UE engine minor across docs | scanner extension |
+
+**Tool / test totals at session-extension end:**
+- 75 tools (64 C++ handlers + 11 bridge-side synthetic tools) — unchanged.
+- pytest: 203 → 208 passing (+3 from PR #115's bulk_delete tests, +2 from PR #116's scanner unit tests).
+- main HEAD: `9b1fba5` end of PR #116 merge; this closing-note PR adds one more merge on top.
+- Drift sweep coverage: 6 canonical signals (tools, cpp_handlers, synthetic_tools, pytest_cases, plugin_version, ue_engine_minor) across 8 scanned files (added `docs/TOOLS.md` in PR #114). 22+ patterns.
+- Branch protection ruleset: `16243165`, active, admin-bypass enabled. Docs-only PRs run in ~5s per matrix job; code PRs run in ~25s (the path-filter from #111 is now battle-tested across 4 docs-only and 3 code PRs).
+
+**What to watch in next session:**
+
+- **Outstanding findings from the bridge audit are documented but unshipped.** Specifically: the `get_camera_transform → set_camera_transform` envelope coupling refactor, the `_run_marker_pattern` exception-conflation split, and the upstream-error-code preservation alignment across `compile_mod_pak` vs `screenshot_actor`. None are urgent; all require a single coordinated PR each, and all should be done WITH a human reviewer in the loop because the changes touch tested response-envelope shapes.
+- **The remaining 9 local unmerged branches** (kept because force-delete needs explicit human go-ahead) are abandoned feature work from the early sprint. Worth a one-time audit by the maintainer; safe to `git branch -D <name>` if the user confirms.
+- **External PRs #102 + #105 still pending.** Maintainer policy unchanged: don't poll, contributor surfaces activity through PR comments, cherry-pick path pre-authorized.
+- **Scanner pattern list is now substantial (~22 patterns).** Future readability win: group patterns by canonical-key class in the source (e.g. a separate list per key with a comment header). Out of scope for now; the dispatch loop already handles a flat list cleanly.
+- **Tenth consecutive closing-note.** Two appended in the same calendar day — first for the attended window, second for the autonomous extension. The cadence scales sub-daily when the work fan-outs do.
