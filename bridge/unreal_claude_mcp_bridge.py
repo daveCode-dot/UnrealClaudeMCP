@@ -1672,6 +1672,27 @@ def synthetic_bulk_delete_assets(req_id, args):
                 "code": -32602,
                 "message": f"bulk_delete_assets: invalid_path: paths[{i}] must be a non-empty string",
             })
+        # Defensive shape checks. UE asset paths look like `/Game/...`,
+        # `/Engine/...`, or `/<MountPoint>/...`. Embedded NUL or `..`
+        # segments are never legitimate and almost always indicate either
+        # input corruption or path-traversal intent; reject early with a
+        # caller-actionable -32602 rather than forwarding a malformed path
+        # to delete_asset and letting it surface a confusing UE-side error.
+        if "\x00" in path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_delete_assets: invalid_path: paths[{i}] contains a NUL byte",
+            })
+        # Block `..` as a path SEGMENT (between slashes or at ends), not as
+        # a substring -- legitimate asset names like `My..Asset` should
+        # still pass. The check covers leading `..`, trailing `..`, and
+        # `/../` mid-path.
+        segments = path.split("/")
+        if any(segment == ".." for segment in segments):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_delete_assets: invalid_path: paths[{i}] contains a '..' segment",
+            })
 
     continue_on_error = args.get("continue_on_error", True)
     if not isinstance(continue_on_error, bool):
