@@ -29,6 +29,17 @@ FORBIDDEN_PATTERNS = [
     # Windows username — replace any occurrence with %USERPROFILE%
     # (PowerShell), $HOME (Bash), or a doc placeholder.
     "NI" + "NOH",
+    # Local-LLM workflow tooling. The maintainer's local AI infra is
+    # personal config, not project documentation. Don't reintroduce
+    # references to the runtime or specific model names in tracked files.
+    # If a contributor PR mentions these by name, ask them to genericize
+    # ("local OSS provider" / "local model") before merge.
+    "olla" + "ma",       # runtime name (lowercase form)
+    "Olla" + "ma",       # runtime name (capitalized form)
+    "qwen" + "3",        # Qwen 3.x model family
+    "gemm" + "a4",       # Gemma 4 model family
+    "nemo" + "tron",     # Nemotron model family (lowercase)
+    "Nemo" + "tron",     # Nemotron model family (capitalized)
 ]
 
 # Tracked files allowed to contain the forbidden patterns. The test file
