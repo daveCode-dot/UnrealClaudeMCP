@@ -611,6 +611,67 @@ def test_bulk_delete_assets_rejects_missing_paths():
     assert "bulk_delete_assets" in resp["error"]["message"]
 
 
+def test_bulk_delete_assets_rejects_path_with_nul_byte():
+    """NUL byte in any path -> -32602 + caller-actionable message; the
+    handler never forwards the malformed path to delete_asset. The error
+    message identifies the offending index so a caller programmatically
+    consuming the response can correct the input."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 24, "method": "tools/call",
+            "params": {
+                "name": "bulk_delete_assets",
+                "arguments": {"paths": ["/Game/Good", "/Game/Bad\x00Asset"]},
+            },
+        })
+
+    assert m.call_count == 0, "validation must short-circuit before any call_ue"
+    assert resp["error"]["code"] == -32602
+    assert "paths[1]" in resp["error"]["message"]
+    assert "NUL" in resp["error"]["message"]
+
+
+def test_bulk_delete_assets_rejects_path_with_dotdot_segment():
+    """`..` as a path SEGMENT (between slashes or at ends) -> -32602. The
+    check is segment-aware so legitimate asset names that happen to contain
+    consecutive dots (`/Game/My..Asset`) still pass."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 25, "method": "tools/call",
+            "params": {
+                "name": "bulk_delete_assets",
+                "arguments": {"paths": ["/Game/Maps/../Secrets"]},
+            },
+        })
+
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "paths[0]" in resp["error"]["message"]
+    assert ".." in resp["error"]["message"]
+
+
+def test_bulk_delete_assets_allows_consecutive_dots_inside_segment():
+    """A legitimate asset name containing `..` inside a SEGMENT (no slash
+    boundary on either side) is still acceptable: `/Game/My..Asset` is a
+    real UE asset name shape and must not be rejected by the segment check."""
+    with patch.object(bridge, "call_ue", return_value={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 26, "method": "tools/call",
+            "params": {
+                "name": "bulk_delete_assets",
+                "arguments": {"paths": ["/Game/My..Asset"]},
+            },
+        })
+
+    # Path passes validation -> call_ue is invoked -> happy-path envelope.
+    assert m.call_count == 1
+    assert m.call_args_list[0].args == ("delete_asset", {"path": "/Game/My..Asset"})
+    assert resp["result"]["isError"] is False
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is True
+    assert body["deleted"] == 1
+
+
 def test_inspect_data_asset_is_synthetic():
     """inspect_data_asset is a SYNTHETIC bridge-side handler (PR #92 — Copilot
     parallel-dispatch retry after the PR #90 stream's prompt was hardened):
