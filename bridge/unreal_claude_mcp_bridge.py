@@ -1505,8 +1505,36 @@ def synthetic_compile_mod_pak(req_id, args):
     output_dir = args.get("output_dir")
     uat_command = args.get("uat_command", "BuildMod")
     run_uat_path = args.get("run_uat_path")
-    extra_args = args.get("extra_args") or []
-    timeout_sec = int(args.get("timeout_sec", 1800))
+    # extra_args: omitted is OK (defaults to []); wrong TYPE is a contract
+    # violation at the tools/call boundary -> fast-fail -32602 instead of
+    # silently coercing (per Gemini PR #105 inline review, line 1500).
+    extra_args = args.get("extra_args")
+    if extra_args is None:
+        extra_args = []
+    elif not isinstance(extra_args, list):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "compile_mod_pak: extra_args must be an array of strings",
+        })
+    # timeout_sec: permissive in FORM (int / float / numeric string all OK —
+    # JSON clients that stringify numbers shouldn't break), strict in TYPE
+    # (un-parseable -> -32602 rather than silent 1800 fallback that masks
+    # caller bugs). float→int truncates by design.
+    raw_timeout = args.get("timeout_sec", 1800)
+    try:
+        timeout_sec = int(float(raw_timeout))
+    except (ValueError, TypeError):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": f"compile_mod_pak: timeout_sec must be numeric (int, float, or numeric string); got {type(raw_timeout).__name__}",
+        })
+    # Non-positive timeout would cause subprocess.TimeoutExpired immediately
+    # (DoS via API).
+    if timeout_sec <= 0:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "compile_mod_pak: timeout_sec must be positive (got non-positive after int cast)",
+        })
 
     if not project_path or not os.path.isfile(project_path):
         return make_response(req_id, error={
