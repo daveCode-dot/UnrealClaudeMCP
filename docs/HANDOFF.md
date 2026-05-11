@@ -805,3 +805,66 @@ User opened the GitHub "New branch ruleset" page and asked: "Do this protection,
 - **For onboarding contributors:** the current ruleset allows 0-approval merges. When the first non-admin contributor lands, bump `required_approving_review_count` to 1 + add NAJEMWEHBE to the bypass list explicitly (in addition to the RepositoryRole 5 entry that already covers admin role).
 - **The capability matrix from PR #95** is the durable artefact from the prior session. The branch protection from this session is the durable artefact from this one. Together they define "what every contributor needs to know" — both are now in `AGENTS.md` + `HANDOFF.md`.
 - **Seventh consecutive closing-note.** Cadence institutional.
+
+**Session 2026-05-11 (late session — tool growth + privacy hardening):**
+
+Long autonomous evening, then a hard pivot mid-stream when the user flagged personal-info exposure. Two acts: (1) shipped 6 new synthetic tools + a marker-pattern refactor, then (2) executed a security scrub across both the working tree and git history. Closes with the public surface trimmed to project-only content and the maintainer's workflow infra moved off-repo.
+
+**Act 1 — feature work (PRs #87 → #104, 15 merged):**
+
+- PR #87 — tool-count drift sweep + single-source-of-truth (`EXPECTED_TOOL_COUNT` in `tests/conftest.py`) replacing three duplicated count assertions.
+- PR #88 — HANDOFF closing-note for #87 (sweep procedure + new trap-table entries).
+- PR #89 — recorded an earlier deferral decision after a probe returned 404.
+- PR #90 — `bulk_delete_assets` synthetic (bridge-side loop over `delete_asset` with partial-success aggregation). First multi-stream parallel-dispatch experiment.
+- PR #91 — closing-note for #90 + first capture of the 5-step prompt-discipline recipe (literal-template / spell-the-contract / forbid-the-shortcut / pin-test-style / order-the-reading).
+- PR #92 — `inspect_data_asset` synthetic. Validated the recipe transfers across coding-agent backends.
+- PR #93 — closing-note for #92.
+- PR #94 — `AGENTS.md` added (universal-agent project context).
+- PR #95 — closing-note for #94 + the cross-agent capability matrix.
+- PR #96 — **branch protection ruleset on `main`** (ruleset `16243165`): block deletion, block non-fast-forward (force-push), require PR, 0 approvals required, require `tests` status check. Admin role gets `bypass_mode: always` so the solo-owner self-merge cadence keeps working.
+- PR #97 — captured the `gh pr merge --admin` requirement (`current_user_can_bypass: always` exists, but `gh` doesn't auto-invoke it; the `--admin` flag must be explicit).
+- PR #98 — `inspect_sound_class` synthetic.
+- PR #99 — `inspect_sound_submix` + `inspect_audio_bus` (parallel dispatch; recovered from one stream regression after the next dispatch named the previous wrongs explicitly).
+- PR #100 — refactored marker-pattern boilerplate into `_run_marker_pattern` helper. -62 net lines, future synthetic-shim additions ~50% cheaper.
+- PR #101 — `inspect_material_function` synthetic. Honest provenance: hand-authored after both parallel-dispatch streams failed independently in that round. The "complex graph" assets (animation sequences, metasound graphs) loop dispatched agents without converging — flagged as a pattern.
+- PR #103, #104 — maintainer's personal local-inference workflow setup (later REMOVED in PR #108).
+
+**Act 2 — privacy + security hardening (PRs #105 → #108, also Phase-2 history rewrite):**
+
+User flagged that personal information had been leaking into the public repo across earlier PRs. Audit confirmed: no API keys, tokens, or bearer auth (clean grep). But the maintainer's Windows username appeared in 7 tracked files across multiple historical commits (`AGENTS.md`, `docs/HANDOFF.md`, `docs/RESTART-RECOVERY.md`, `docs/session-memory-archive/*`, two superpowers plans). Email address in commit headers also flagged but left untouched pending explicit direction.
+
+- PR #106 — **Phase 1 forward scrub.** Replaced the username with portable placeholders (`%USERPROFILE%`, `$env:USERPROFILE`, `<USERNAME>`). Added `tests/test_no_personal_leaks.py` — CI guard that walks every tracked file and asserts the forbidden-pattern list is absent. Forbidden list lives at the top of the test as a one-line edit for future additions.
+- **Phase 2 history rewrite (no PR — direct force-push):** `git filter-repo --replace-text --replace-message` across all 291 commits. Force-pushed to `main` via the admin bypass on the ruleset. Deleted 61 stale remote branches (each contained pre-rewrite content). The PR-page commit view on GitHub still shows old SHAs (cached separately) but the canonical history + main branch are clean. Local tag `pre-history-rewrite-backup-353e110` preserved for rollback.
+- PR #107 — **Filter-repo collateral fix.** The `--replace-text` rewrite hit the test file's own `FORBIDDEN_PATTERNS` literal, rewriting the forbidden value into a placeholder. After rewrite the test forbade the wrong string. Fix: construct the forbidden value at runtime via string concatenation so the literal does NOT appear as a source constant — invisible to future grep-based rewriters. Pattern proved twice now and is the durable defense.
+- PR #108 — **Removed maintainer-personal workflow infra from public docs.** The "Local LLMs via X" section in `AGENTS.md` documented the maintainer's local-inference setup (runtime install path, specific model names, hardware specs, dispatch invocation examples) across PRs #103 + #104. That's workflow tooling, not project documentation — contributors don't need it, and it fingerprints the maintainer's stack. Section removed; content saved to a personal notes file outside the repo. `tests/test_no_personal_leaks.py` extended with 6 new forbidden patterns (runtime name × 2 cases + 4 model families). All patterns built via runtime string-concatenation so they remain filter-repo-safe.
+
+**Privacy policy now in force (binding on the next session):**
+
+When the user gives instructions naming specific AI agents, models, runtimes, or workflow tools, those names are workflow infra, NOT project documentation. **DO NOT write those names into commits, PR titles, PR bodies, or in-repo docs unless the user explicitly approves the wording for that doc.** Generic labels are fine in committed text ("cloud agent A/B", "local OSS provider", "small / heavy / multimodal local model"). The user reviews the wording before commit if anything specific needs to land. The leak-detector test enforces the runtime + model names automatically.
+
+**Branch protection cadence:**
+
+Every merge to main is now ruleset-protected. Solo self-merge via `gh pr merge <N> --merge --admin --delete-branch`. The `--admin` flag is required; without it `gh` errors `base branch policy prohibits the merge` even when `current_user_can_bypass: always` is set. External-contributor PRs need a non-trivial approach: the bypass only covers maintainer self-merge, not contributor PRs that need a separate review path.
+
+**Two external PRs from a returning contributor — DIRTY pending rebase:**
+
+- **PR #102** — `compile_mod_pak_direct` synthetic. Adds a bridge-side handler that invokes `UnrealPak.exe` directly with a response file, bypassing `RunUAT.bat` entirely. Motivation: certain UE Dev Kits ship with `RunUAT BuildMod` broken; `UnrealPak.exe` works standalone. Verified end-to-end by the contributor against their actual Steam Workshop deployment. CI passed all four Python versions on his branch.
+- **PR #105** — defensive input validation fix to `compile_mod_pak`. Three boundary bugs closed: `extra_args` type check, `int(timeout_sec)` try/except, non-positive timeout short-circuit before subprocess, float-vs-string coercion via `int(float(...))`. Two new tests. CI passed all four Python versions on his branch.
+
+Both PRs went DIRTY when Phase-2's force-push rewrote main's history. The contributor's fork base predates the rewrite, so his diffs inflated to ~30 000 lines (file-tree collateral). Maintainer comments posted on both PRs (issue links: `#102 issuecomment-4424982104`, `#105 issuecomment-4424984417`) explaining the situation is on the maintainer side, with explicit `git rebase` + `cherry-pick` paths for resolution. **The PRs themselves are technically sound — only the merge state is broken.** Next session: wait for the contributor's rebase OR maintainer cherry-picks the substantive commits onto fresh origin branches (cross-repo pattern from the earlier integration of his original contribution).
+
+**Tool / test totals at session end:**
+- 75 tools (64 C++ handlers + 11 bridge-side synthetic tools).
+- pytest: 202 passing (3 new tests over the session: the leak detector + 2 from #101).
+- main HEAD: `f0a6ab5` end of PR #108 merge; this closing-note PR adds one more merge on top.
+- Branch protection ruleset: `16243165`, active, admin-bypass enabled.
+
+**What to watch in next session:**
+
+- **Two external PRs (#102, #105) awaiting contributor rebase.** Check for updates; if no progress, maintainer cherry-pick is the backup path.
+- **`tests/test_no_personal_leaks.py` is the safety net.** Adding a forbidden pattern is a one-line edit at the top of the file. Always use the `"FOO" + "BAR"` runtime-concat trick for new entries — straight literals will get filter-repo'd into placeholders if history is ever rewritten again, breaking the test.
+- **Local backup tag `pre-history-rewrite-backup-353e110`** preserved on the maintainer's local machine for emergency rollback of the history rewrite. NOT pushed to origin (would re-expose the scrubbed content). Don't lose it.
+- **Email-in-commit-headers is unscrubbed.** Mentioned in the audit but not actioned — bigger surgery that would invalidate all commit attribution. Open question for the next session if the maintainer wants to address it.
+- **Maintainer-personal workflow notes** live outside the repo. Next session needs to read them out-of-band to know which inference backends to dispatch against. The naming-policy applies regardless of where the content lives.
+
+**Eighth consecutive closing-note.** Cadence: every session ships a feature/chore PR + a HANDOFF append. Next-session pickup is mechanical from this doc + the at-a-glance at the top + the trap-table.
