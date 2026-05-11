@@ -205,6 +205,18 @@ def main():
         except SmokeFailure as e:
             failures.append(str(e))
             print(f"\n!! FAIL: {e}")
+        except Exception as e:  # noqa: BLE001 -- deliberate broad catch
+            # Anything that isn't a `SmokeFailure` (TypeError, KeyError,
+            # ConnectionRefusedError, JSONDecodeError, etc.) is recorded as
+            # an UNEXPECTED failure rather than allowed to abort the whole
+            # script. Aborting at step 3 would hide whatever the remaining
+            # 12 default checks would have surfaced -- much worse signal
+            # for a maintainer triaging the failure. KeyboardInterrupt and
+            # SystemExit are deliberately NOT caught (BaseException, not
+            # Exception).
+            msg = f"[{label}] unexpected {type(e).__name__}: {e}"
+            failures.append(msg)
+            print(f"\n!! UNEXPECTED FAIL: {msg}")
 
     header("0. unknown method (should return error -32601)")
     def t0():
