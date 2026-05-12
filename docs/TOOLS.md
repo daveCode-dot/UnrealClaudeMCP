@@ -2690,6 +2690,168 @@ Returns `{"ok": false, "total": 3, "deleted": 2, "failed": 1, "results": [...]}`
 
 ---
 
+## bulk_move_assets
+
+Move multiple assets into a single destination folder by composing the [`move_asset`](#move_asset) C++ handler bridge-side. Each move leaves a redirector at the source per UE's standard move semantics, so existing references stay resolvable until [`fix_up_redirectors`](#fix_up_redirectors) sweeps them.
+
+**Bridge-side synthetic tool.** Pure Python — loops over `paths` and dispatches one `call_ue("move_asset", {"path": ..., "dest_folder": ...})` per entry. Mirrors `bulk_delete_assets`'s shape so client code can switch between the two with a one-tool-name change (delete vs. archive workflows).
+
+**Partial-failure model:** identical to [`bulk_delete_assets`](#bulk_delete_assets). `continue_on_error: true` (default) keeps moving after individual failures and surfaces per-path errors in `results[]`; `continue_on_error: false` stops at the first failure and returns the partial results collected so far.
+
+**Path validation:** each entry in `paths` must be a non-empty string. NUL byte (`\x00`) and `..` path segments are rejected envelope-level (`-32602`) before any move is attempted.
+
+**Params**
+- `paths` (array of string, required) - asset object paths to move, e.g. `["/Game/Foo", "/Game/Bar/Baz"]`. Same shape rules as [`bulk_delete_assets`](#bulk_delete_assets).
+- `dest_folder` (string, required) - destination folder for ALL moved assets, e.g. `/Game/Archive`. Same folder applies to every path; for per-asset destinations, call [`move_asset`](#move_asset) directly.
+- `continue_on_error` (bool, optional, default `true`) - when `false`, abort after the first per-path failure.
+
+**Result**
+- `ok` (bool) - `true` only when `failed == 0`
+- `total` (int) - `paths.length`
+- `moved` (int) - count of per-path successes
+- `failed` (int) - count of per-path failures
+- `results` (array) - one entry per attempted path, in input order:
+  - `path` (string) - source path
+  - `ok` (bool)
+  - `dest_path` (string or null) - destination path on success
+  - `error_code` (int or null) - preserved from the upstream `move_asset` response on failure
+  - `error_message` (string or null) - preserved from the upstream `move_asset` response on failure
+
+**Errors (envelope-level):** `-32602` (missing or non-list `paths`, non-string entry, NUL or `..` in any path, missing `dest_folder`, non-bool `continue_on_error`).
+
+**Example - happy path**
+```json
+{"jsonrpc":"2.0","id":1,"method":"bulk_move_assets","params":{
+  "paths": ["/Game/Foo", "/Game/Bar/Baz"],
+  "dest_folder": "/Game/Archive"
+}}
+```
+
+**Example - fail fast**
+```json
+{"jsonrpc":"2.0","id":2,"method":"bulk_move_assets","params":{
+  "paths": ["/Game/A", "/Game/B"],
+  "dest_folder": "/Game/Archive",
+  "continue_on_error": false
+}}
+```
+
+---
+
+## bulk_rename_assets
+
+Rename multiple assets in one MCP call by composing the [`rename_asset`](#rename_asset) C++ handler bridge-side. Each rename leaves a redirector at the source per UE's standard rename semantics, so existing references continue to resolve until [`fix_up_redirectors`](#fix_up_redirectors) sweeps them.
+
+**Bridge-side synthetic tool.** Pure Python — loops over `items[]` and dispatches one `call_ue("rename_asset", {"path": ..., "new_name": ...})` per entry. Items take per-entry destinations (each asset has its own new name), unlike `bulk_move_assets` where all assets share one `dest_folder`.
+
+**Partial-failure model:** identical shape to the other `bulk_*_assets` synthetics. `continue_on_error: true` (default) keeps going after individual failures; `continue_on_error: false` aborts at the first failure.
+
+**Per-entry validation:**
+- `path` must be a non-empty string; NUL byte (`\x00`) and `..` segments rejected envelope-level.
+- `new_name` must be a non-empty string with no slash (`/`) or dot (`.`) characters — `rename_asset` is name-only, not a move. Cross-folder renames go through `bulk_move_assets`.
+
+**Params**
+- `items` (array of object, required) - per-entry rename instructions:
+  - `path` (string, required) - source asset object path
+  - `new_name` (string, required) - new asset name (no slashes or dots)
+- `continue_on_error` (bool, optional, default `true`) - when `false`, abort after the first per-entry failure.
+
+**Result**
+- `ok` (bool) - `true` only when `failed == 0`
+- `total` (int) - `items.length`
+- `renamed` (int) - count of per-entry successes
+- `failed` (int) - count of per-entry failures
+- `results` (array) - one entry per attempted item, in input order:
+  - `path` (string) - source path
+  - `new_name` (string) - requested new name
+  - `ok` (bool)
+  - `new_path` (string or null) - resulting asset path on success
+  - `error_code` (int or null) - preserved from the upstream `rename_asset` response on failure
+  - `error_message` (string or null) - preserved from the upstream `rename_asset` response on failure
+
+**Errors (envelope-level):** `-32602` (missing or non-list `items`, non-dict entry, missing `path` or `new_name`, NUL or `..` in `path`, slash or dot in `new_name`, non-bool `continue_on_error`).
+
+**Example - happy path**
+```json
+{"jsonrpc":"2.0","id":1,"method":"bulk_rename_assets","params":{
+  "items": [
+    {"path": "/Game/Foo/T_Old", "new_name": "T_New"},
+    {"path": "/Game/Bar/M_Old", "new_name": "M_New"}
+  ]
+}}
+```
+
+**Example - fail fast**
+```json
+{"jsonrpc":"2.0","id":2,"method":"bulk_rename_assets","params":{
+  "items": [
+    {"path": "/Game/A", "new_name": "A2"},
+    {"path": "/Game/B", "new_name": "B2"}
+  ],
+  "continue_on_error": false
+}}
+```
+
+---
+
+## bulk_duplicate_assets
+
+Duplicate multiple assets into per-entry destinations in one MCP call by composing the [`duplicate_asset`](#duplicate_asset) C++ handler bridge-side. Unlike `bulk_move_assets`, each item has its own `dest_path` and (optionally) `new_name`, so a single call can scatter copies across folders.
+
+**Bridge-side synthetic tool.** Pure Python — loops over `items[]` and dispatches one `call_ue("duplicate_asset", {"path": ..., "dest_path": ..., "new_name": ...})` per entry. Mirrors `bulk_rename_assets`'s per-entry items shape.
+
+**Partial-failure model:** identical shape to the other `bulk_*_assets` synthetics. `continue_on_error: true` (default) keeps going after individual failures; `continue_on_error: false` aborts at the first failure.
+
+**Per-entry validation:**
+- `path` (source) must be a non-empty string; NUL byte (`\x00`) and `..` segments rejected envelope-level.
+- `dest_path` must be a non-empty string; NUL byte (`\x00`) and `..` segments rejected.
+- `new_name` (optional override) must be a non-empty string with no slash (`/`) or dot (`.`) characters when provided. When omitted, the duplicate gets the source asset's name in `dest_path`.
+
+**Params**
+- `items` (array of object, required) - per-entry duplicate instructions:
+  - `path` (string, required) - source asset object path
+  - `dest_path` (string, required) - destination package path (folder + optional new name)
+  - `new_name` (string, optional) - asset name override; no slashes or dots
+- `continue_on_error` (bool, optional, default `true`) - when `false`, abort after the first per-entry failure.
+
+**Result**
+- `ok` (bool) - `true` only when `failed == 0`
+- `total` (int) - `items.length`
+- `duplicated` (int) - count of per-entry successes
+- `failed` (int) - count of per-entry failures
+- `results` (array) - one entry per attempted item, in input order:
+  - `path` (string) - source path
+  - `dest_path` (string) - requested destination
+  - `new_name` (string or null) - name override if provided
+  - `ok` (bool)
+  - `created_path` (string or null) - resulting duplicate path on success
+  - `error_code` (int or null) - preserved from the upstream `duplicate_asset` response on failure
+  - `error_message` (string or null) - preserved from the upstream `duplicate_asset` response on failure
+
+**Errors (envelope-level):** `-32602` (missing or non-list `items`, non-dict entry, missing `path` or `dest_path`, NUL or `..` in `path` or `dest_path`, slash or dot in `new_name`, non-bool `continue_on_error`).
+
+**Example - happy path**
+```json
+{"jsonrpc":"2.0","id":1,"method":"bulk_duplicate_assets","params":{
+  "items": [
+    {"path": "/Game/Templates/T_Base", "dest_path": "/Game/A/T_BaseCopy"},
+    {"path": "/Game/Templates/M_Base", "dest_path": "/Game/B/M_BaseCopy"}
+  ]
+}}
+```
+
+**Example - per-entry name override**
+```json
+{"jsonrpc":"2.0","id":2,"method":"bulk_duplicate_assets","params":{
+  "items": [
+    {"path": "/Game/T_Stamp", "dest_path": "/Game/Variants", "new_name": "T_Stamp_A"},
+    {"path": "/Game/T_Stamp", "dest_path": "/Game/Variants", "new_name": "T_Stamp_B"}
+  ]
+}}
+```
+
+---
+
 ## inspect_data_asset
 
 Shallow-reflect a UDataAsset by package path: returns leaf class name, parent class name, full package path, and a per-property reflection list (name, Python type, stringified value).
@@ -2864,6 +3026,200 @@ Use the `parent_class` value from a child's response to walk up the SoundClass h
 }}
 ```
 Returns `{"ok": false, "error_code": "wrong_asset_type", "error_message": "Asset is not a USoundClass: /Game/Data/DA_PlayerStats", "actual_class": "MyDataAsset"}`.
+
+---
+
+## inspect_sound_submix
+
+Inspect a `USoundSubmix` (or any `USoundSubmixBase` subclass) by package path: returns the leaf class name, full package path, parent submix asset path, child submix asset paths, and editor-exposed properties (output volume / wet / dry levels, parent-effect-chain count, etc.) via permissive `dir()` enumeration.
+
+**Bridge-side synthetic tool.** Pure Python — composes [`execute_unreal_python`](#execute_unreal_python) + [`get_log_lines`](#get_log_lines) via the marker pattern, identical canonical six-step flow as [`inspect_sound_class`](#inspect_sound_class).
+
+**Marker token:** `__SUBMIX_<12-hex>__...__END__`.
+
+**Permissive property enumeration:** USoundSubmix exposes several editor-only properties that aren't worth hand-curating (output level scaling, dynamic processor chains, effect presets). The embedded script iterates `dir(obj)` filtered to non-underscore names and attempts `get_editor_property(n)` per name — UE raises for non-UPROPERTYs and the script catches + skips silently. Same heuristic as [`inspect_data_asset`](#inspect_data_asset).
+
+**Logical errors as `ok=False` success envelopes:**
+- `asset_not_found` - `EditorAssetLibrary.load_asset(path)` returned `None`.
+- `wrong_asset_type` - path resolved to a non-USoundSubmixBase asset. Response includes `actual_class`.
+- `marker_not_found` - LogPython buffer didn't contain the marker after exec. **Retry typically resolves.**
+- `invalid_json` - marker found but payload didn't JSON-decode.
+
+Transport-level errors (UE editor not running → `-32099`; Python interpreter raised → `-32603`) come back as JSON-RPC errors.
+
+**Params**
+- `path` (string, required) - package path to a USoundSubmix asset, e.g. `/Game/Audio/Submix_Music`.
+
+**Result (ok=true path)**
+- `ok` (bool) - `true`
+- `path` (string) - echoes input
+- `class` (string) - leaf class name from `cls.get_name()`, typically `"SoundSubmix"`
+- `package_path` (string) - full path with object name
+- `parent_submix` (string or null) - parent submix asset path; null when this is a root submix
+- `child_submixes` (array of string) - child submix asset paths; may be empty
+- `properties` (array of `{name, type, value}`) - permissive `dir()` reflection of editor-exposed properties
+
+**Result (ok=false path)**
+- `ok` (bool) - `false`
+- `error_code` (string) - `asset_not_found` / `wrong_asset_type` / `marker_not_found` / `invalid_json`
+- `error_message` (string)
+- `actual_class` (string, only on `wrong_asset_type`)
+
+**Errors (envelope-level):** `-32602` (missing or non-string `path`); `-32603` (UE editor unreachable, or `execute_unreal_python` raised).
+
+**Example - happy path**
+```json
+{"jsonrpc":"2.0","id":1,"method":"inspect_sound_submix","params":{
+  "path": "/Game/Audio/Submix_Music"
+}}
+```
+
+---
+
+## inspect_audio_bus
+
+Inspect a `UAudioBus` by package path: returns the leaf class name, full package path, the `AudioBusChannels` enum (Mono / Stereo / Quad / 5.1 / 7.1), and any other editor-exposed properties via permissive `dir()` enumeration.
+
+**Bridge-side synthetic tool.** Pure Python — composes [`execute_unreal_python`](#execute_unreal_python) + [`get_log_lines`](#get_log_lines) via the marker pattern, identical flow to [`inspect_sound_class`](#inspect_sound_class).
+
+**Marker token:** `__AUDIOBUS_<12-hex>__...__END__`.
+
+**Permissive property enumeration:** UAudioBus exposes only a small fixed property set in stock UE 5.7 (primarily channel count + tags), but plugins / project subclasses may add more. The embedded script reflects via `dir(obj)` + `get_editor_property(n)` and silently skips non-UPROPERTYs.
+
+**Logical errors as `ok=False` success envelopes:**
+- `asset_not_found` - load returned `None`.
+- `wrong_asset_type` - path resolved to a non-UAudioBus asset. Response includes `actual_class`.
+- `marker_not_found` - LogPython buffer didn't contain the marker. **Retry typically resolves.**
+- `invalid_json` - marker found but payload didn't JSON-decode.
+
+**Params**
+- `path` (string, required) - package path to a UAudioBus asset, e.g. `/Game/Audio/AB_MusicSends`.
+
+**Result (ok=true path)**
+- `ok` (bool) - `true`
+- `path` (string)
+- `class` (string) - typically `"AudioBus"`
+- `package_path` (string)
+- `audio_bus_channels` (string) - enum stringified, e.g. `"Stereo"`
+- `properties` (array of `{name, type, value}`) - permissive reflection of remaining editor-exposed properties
+
+**Result (ok=false path)**
+- `ok` (bool) - `false`
+- `error_code` (string)
+- `error_message` (string)
+- `actual_class` (string, only on `wrong_asset_type`)
+
+**Errors (envelope-level):** `-32602` (missing or non-string `path`); `-32603` (UE editor unreachable, or `execute_unreal_python` raised).
+
+**Example - happy path**
+```json
+{"jsonrpc":"2.0","id":1,"method":"inspect_audio_bus","params":{
+  "path": "/Game/Audio/AB_MusicSends"
+}}
+```
+
+---
+
+## inspect_material_function
+
+Inspect a `UMaterialFunction` (or `UMaterialFunctionMaterialLayer` / `UMaterialFunctionMaterialLayerBlend`) by package path: returns the leaf class name, full package path, exposed input/output pin names, and remaining editor-exposed properties via permissive `dir()` enumeration. Graph topology (node-to-node wiring) is NOT reflected here — that requires a dedicated traversal pass beyond surface-level metadata.
+
+**Bridge-side synthetic tool.** Pure Python — composes [`execute_unreal_python`](#execute_unreal_python) + [`get_log_lines`](#get_log_lines) via the marker pattern, identical flow to [`inspect_material`](#inspect_material) and [`inspect_sound_class`](#inspect_sound_class).
+
+**Marker token:** `__MATFUNC_<12-hex>__...__END__`.
+
+**Input/output pin enumeration:** UMaterialFunction's input pins live in `FunctionExpressions` (a TArray of `UMaterialExpressionFunctionInput*`); outputs live in matching `UMaterialExpressionFunctionOutput*`. The embedded script walks the expression list, casts each to the input/output expression classes, and reads `input_name` / `output_name`. Both arrays are returned as plain strings; type info (which scalar / vector / texture pin type) is deferred to a later release.
+
+**Logical errors as `ok=False` success envelopes:**
+- `asset_not_found` - load returned `None`.
+- `wrong_asset_type` - path resolved to a non-UMaterialFunction asset. Response includes `actual_class`.
+- `marker_not_found` - LogPython buffer didn't contain the marker. **Retry typically resolves.**
+- `invalid_json` - marker found but payload didn't JSON-decode.
+
+**Params**
+- `path` (string, required) - package path to a UMaterialFunction asset, e.g. `/Game/Materials/MF_BlendThreshold`.
+
+**Result (ok=true path)**
+- `ok` (bool) - `true`
+- `path` (string)
+- `class` (string) - typically `"MaterialFunction"` / `"MaterialFunctionMaterialLayer"` / `"MaterialFunctionMaterialLayerBlend"`
+- `package_path` (string)
+- `inputs` (array of string) - input pin names; may be empty
+- `outputs` (array of string) - output pin names; may be empty
+- `properties` (array of `{name, type, value}`) - permissive reflection of remaining editor-exposed properties
+
+**Result (ok=false path)**
+- `ok` (bool) - `false`
+- `error_code` (string)
+- `error_message` (string)
+- `actual_class` (string, only on `wrong_asset_type`)
+
+**Errors (envelope-level):** `-32602` (missing or non-string `path`); `-32603` (UE editor unreachable, or `execute_unreal_python` raised).
+
+**Example - happy path**
+```json
+{"jsonrpc":"2.0","id":1,"method":"inspect_material_function","params":{
+  "path": "/Game/Materials/MF_BlendThreshold"
+}}
+```
+
+---
+
+## inspect_metasound
+
+Inspect a `UMetaSoundSource` or `UMetaSoundPatch` asset by package path: returns the leaf class name (which of the two it is), full package path, and any other editor-exposed UPROPERTYs via permissive `dir()` enumeration. Graph structure (node / connection topology) is NOT reflected here — that requires a dedicated traversal pass.
+
+**Bridge-side synthetic tool.** Pure Python — composes [`execute_unreal_python`](#execute_unreal_python) + [`get_log_lines`](#get_log_lines) via the marker pattern, identical flow to [`inspect_sound_class`](#inspect_sound_class).
+
+**Marker token:** `__METASOUND_<12-hex>__...__END__`.
+
+**Accepts both subclasses:**
+- `UMetaSoundSource` - the player-attached emitter form (most common).
+- `UMetaSoundPatch` - a reusable subgraph that another MetaSound includes.
+
+Both inherit from common base; this tool accepts either and returns `class` distinguishing them in the response.
+
+**Permissive property enumeration:** MetaSound exposes a moderate fixed property set (output target, volume modulation, parameter pack metadata). Plugins / project subclasses may add more. The embedded script reflects via `dir(obj)` + `get_editor_property(n)` and silently skips non-UPROPERTYs. For graph-level introspection (nodes, connections, parameter inputs), use [`execute_unreal_python`](#execute_unreal_python) with a custom traversal.
+
+**Logical errors as `ok=False` success envelopes:**
+- `asset_not_found` - load returned `None`.
+- `wrong_asset_type` - path resolved to neither UMetaSoundSource nor UMetaSoundPatch. Response includes `actual_class`.
+- `metasound_unavailable` - the MetaSound plugin is not enabled in the running project; the embedded reflection couldn't `import unreal.MetaSoundSource`. Enable the MetaSound plugin to use this tool.
+- `marker_not_found` - LogPython buffer didn't contain the marker. **Retry typically resolves.**
+- `invalid_json` - marker found but payload didn't JSON-decode.
+
+**Params**
+- `path` (string, required) - package path to a MetaSound asset, e.g. `/Game/Audio/MS_Music`.
+
+**Result (ok=true path)**
+- `ok` (bool) - `true`
+- `path` (string)
+- `class` (string) - `"MetaSoundSource"` or `"MetaSoundPatch"`
+- `package_path` (string)
+- `properties` (array of `{name, type, value}`) - permissive reflection
+
+**Result (ok=false path)**
+- `ok` (bool) - `false`
+- `error_code` (string) - one of the five codes above
+- `error_message` (string)
+- `actual_class` (string, only on `wrong_asset_type`)
+
+**Errors (envelope-level):** `-32602` (missing or non-string `path`); `-32603` (UE editor unreachable, or `execute_unreal_python` raised).
+
+**Example - happy path**
+```json
+{"jsonrpc":"2.0","id":1,"method":"inspect_metasound","params":{
+  "path": "/Game/Audio/MS_Music"
+}}
+```
+
+**Example - metasound plugin not enabled**
+```json
+{"jsonrpc":"2.0","id":2,"method":"inspect_metasound","params":{
+  "path": "/Game/Audio/MS_Music"
+}}
+```
+Returns `{"ok": false, "error_code": "metasound_unavailable", "error_message": "MetaSound plugin not enabled - enable it in Plugins > Audio"}`.
 
 ---
 
