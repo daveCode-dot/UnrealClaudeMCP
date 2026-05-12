@@ -99,6 +99,7 @@ def test_tool_names_are_unique_and_match_handlers():
         "inspect_sound_submix",
         "inspect_audio_bus",
         "inspect_material_function",
+        "inspect_metasound",
     }
     assert set(names) == expected
 
@@ -1638,6 +1639,92 @@ def test_inspect_material_function_rejects_missing_path():
     })
     assert resp["error"]["code"] == -32602
     assert "inspect_material_function" in resp["error"]["message"]
+
+
+def test_inspect_metasound_is_synthetic():
+    """inspect_metasound is a SYNTHETIC bridge-side handler that accepts
+    either MetaSoundSource (emitter-attached) or MetaSoundPatch (reusable
+    subgraph) per the Metasound plugin's two-class surface in UE 5.7.
+    path is required at the schema level."""
+    t = next((t for t in bridge.TOOLS if t["name"] == "inspect_metasound"), None)
+    assert t is not None
+    assert t["inputSchema"]["required"] == ["path"]
+    assert t["inputSchema"]["properties"]["path"]["type"] == "string"
+    assert "inspect_metasound" in bridge.SYNTHETIC_TOOLS
+    assert bridge.SYNTHETIC_TOOLS["inspect_metasound"] is bridge.synthetic_inspect_metasound
+
+
+def test_inspect_metasound_happy_path():
+    """Two-round-trip marker pattern: exec_python returns ok=True with
+    no inline payload; get_log_lines returns the marker-wrapped JSON
+    payload that the embedded Python emitted. The bridge extracts the
+    JSON between the marker and __END__ and returns it via
+    _wrap_tool_result."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    body = {
+        "ok": True,
+        "path": "/Game/Audio/MS_Test",
+        "class": "MetaSoundSource",
+        "package_path": "/Game/Audio/MS_Test.MS_Test",
+        "additional_properties": [],
+    }
+    marker_hex = "fedcba987654"
+    log_line = f"__METASOUND_{marker_hex}__{json.dumps(body)}__END__"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": log_line}
+    ]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        with patch.object(bridge, "uuid", fake_uuid):
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 84, "method": "tools/call",
+                "params": {"name": "inspect_metasound", "arguments": {"path": "/Game/Audio/MS_Test"}},
+            })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got == body
+
+
+def test_inspect_metasound_propagates_asset_not_found():
+    """asset_not_found logical error envelope (the marker payload's
+    `ok: False` branch); the message follows the post-PR-#126 canonical
+    `<tool>: asset_not_found: <path>` shape."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    body = {
+        "ok": False,
+        "error_code": "asset_not_found",
+        "error_message": "inspect_metasound: asset_not_found: /Game/Audio/MS_Missing",
+    }
+    marker_hex = "0011223344aa"
+    log_line = f"__METASOUND_{marker_hex}__{json.dumps(body)}__END__"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": log_line}
+    ]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        with patch.object(bridge, "uuid", fake_uuid):
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 85, "method": "tools/call",
+                "params": {"name": "inspect_metasound", "arguments": {"path": "/Game/Audio/MS_Missing"}},
+            })
+
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "asset_not_found"
+    assert got["error_message"].startswith("inspect_metasound: asset_not_found:")
+
+
+def test_inspect_metasound_rejects_missing_path():
+    """Schema enforces path as required; missing it returns -32602."""
+    resp = bridge.handle({
+        "jsonrpc": "2.0", "id": 86, "method": "tools/call",
+        "params": {"name": "inspect_metasound", "arguments": {}},
+    })
+    assert resp["error"]["code"] == -32602
+    assert "inspect_metasound" in resp["error"]["message"]
 
 
 def test_screenshot_actor_happy_path():
