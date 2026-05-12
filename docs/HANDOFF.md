@@ -1093,3 +1093,86 @@ User woke up, granted standing UE-launch permission ("we always use Unreal for t
 - **`get_camera_transform` helper refactor (deferred bridge-audit #3)** still pending. The change is risky because `synthetic_set_camera_transform` calls into `synthetic_get_camera_transform`'s envelope shape directly (line ~1329-1336 in bridge.py); any refactor must touch both in lockstep. Out of scope for an autonomous unattended window; attended-only.
 - **The drift_sweep + live-MCP combination is the project's new quality stack.** Drift sweep catches doc/count regression deterministically; live MCP catches embedded-Python and cross-tool convention drift. Both should run on any bridge.py touching PR before merge.
 - **Twelfth consecutive closing-note.** Four windows in 24h. The cadence is no longer cadence — it's documentation rhythm at the molecular level. Next session's pickup is the latest "what to watch" bullet list.
+
+**Session 2026-05-12 (morning attended window continuation — deferred bridge-audit backlog cleared):**
+
+User extended permission late morning ("I give you permission to do, like, fifty connects, pull request if you wanna do commits today"). The remaining ~2 hours of attended runway cleared the entire "deferred for human reviewer" bridge-audit backlog plus surfaced one more UE Python wrapper trap class via a live probe-sweep.
+
+**What shipped (continued window, 3 PRs after PR #129):**
+
+- **PR #130** — `refactor(bridge): get_camera_transform uses _run_marker_pattern helper`. Closes the third (and highest-risk) deferred bridge-audit finding. The hand-rolled marker pattern in `synthetic_get_camera_transform` (~57 lines) collapses to a single helper call. Two behaviour changes: success envelope drops the `{ok: True, **data}` wrapper (no test or known caller pinned the key); marker_not_found becomes a logical-error envelope instead of a JSON-RPC transport error (matches every other helper caller). `synthetic_set_camera_transform` updated in lockstep with a new "layer 3" check that catches the logical-error envelope from get and refuses with `-32603` -- pre-refactor it would have silently snapped the camera to `(0, 0, 0)` on the omitted side of a partial update during a busy LogPython burst. Net bridge.py -35 lines. Three new regression tests pin the new envelope shapes.
+
+- **PR #131** — `docs(architecture): UE 5.7 Python wrapper constructor trap-table`. Live probe-sweep audited the other common `unreal.*` struct constructors the bridge might emit Python for. Findings:
+
+  | Constructor | Positional order | Safe? |
+  |---|---|---|
+  | `unreal.Vector` / `Vector2D` / `LinearColor` / `Quat` | matches property order | ✓ |
+  | `unreal.Rotator(a, b, c)` | `(roll, pitch, yaw)` struct memory | ✗ fixed in #127 |
+  | `unreal.Color(a, b, c, d)` | `(B, G, R, A)` DirectX legacy | ✗ no current bridge usage but trap is real |
+
+  Rule documented in `docs/ARCHITECTURE.md` § "UE 5.7 API gotchas": use empty constructor + named property assignment for any `unreal.*` struct in bridge-emitted Python. Includes a reusable probe pattern for future-validating any new struct in seconds.
+
+**Bridge-audit backlog status: ALL THREE FINDINGS CLOSED.**
+
+| Finding | PR | Status |
+|---|---|---|
+| inspect_* asset_not_found message inconsistency (LIVE-FOUND) | #126 | merged |
+| _run_marker_pattern exception conflation split | #128 | merged |
+| get_camera_transform helper refactor + set lockstep | #130 | merged |
+
+Plus a fourth bonus PR addressing a non-defect Copilot finding that I had previously deferred: PR #131's wrapper-trap audit closed the conceptual gap that PR #127 had only addressed for one struct (Rotator).
+
+**Live MCP validation, second round:**
+
+- `inspect_material_function /Engine/Functions/Engine_MaterialFunctions02/Texturing/FlipBook` → real MaterialFunction shape with description, library_categories, inputs/outputs.
+- `inspect_static_mesh /Engine/BasicShapes/Cube` → 54v / 48t, 100×100×100 bounds, WorldGridMaterial slot.
+- `inspect_material /Engine/EngineMaterials/BaseFlattenMaterial` → 7 scalar + 2 vector + 10 texture + 18 static-switch parameter catalog.
+- `examples/smoke_test.py` against the bound bridge → **15 default checks all passed, "Smoke test complete - all assertions passed."** Includes the texture pipeline, build-a-level (spawn + transform + property + component + delete), advanced property types, observability, asset registry, sequencer (skipped, no LSes seeded), materials (skipped, no MICs seeded), and large-response framing.
+- Live probe-sweep of 6 `unreal.*` struct constructors via `execute_unreal_python` + `get_log_lines` round-trip → surfaced the Color BGRA trap that produced PR #131.
+
+**Cumulative session 2026-05-12 totals (all five windows combined):**
+
+| PR | Title | Window | Class |
+|---|---|---|---|
+| #110-#114 | drift fix, CI speedup, drift_sweep, closing, scanner hardening | attended #1 | foundation |
+| #115-#117 | bulk_delete hardening, scanner version detection, closing | autonomous #1 | foundation |
+| #118-#119 | smoke_test count, step() exception broadening | autonomous #2 | hardening |
+| #120-#122 | David's #102/#105 cherry-picks, closing | autonomous #3 | external integration |
+| #123-#124 | UE blocker hypotheses + path-quoting fix | autonomous #4 | live-UE setup |
+| #125 | standing UE-auth + path-quoting recipe in house rules | morning #1 | house rules |
+| #126 | inspect_* error message alignment | morning #1 | LIVE-FOUND bug |
+| #127 | set_camera_transform Rotator arg order | morning #1 | CRITICAL LIVE-FOUND bug |
+| #128 | _run_marker_pattern exception class split | morning #1 | hardening |
+| #129 | morning #1 closing note | morning #1 | session log |
+| #130 | get_camera_transform helper refactor + set lockstep | morning #2 | deferred-audit close |
+| #131 | UE Python wrapper constructor trap-table | morning #2 | trap-table |
+
+**22 PRs in <26h calendar-time.** Of those, two LIVE-FOUND bugs (#126, #127) + one new trap class discovered via live probe (#131) + three deferred bridge-audit findings cleared (#126, #128, #130). The drift-sweep + live-MCP + pytest stack is now the project's complete quality apparatus.
+
+**New trap-table entries from this morning #2 window:**
+
+- **UE 5.7 Python `unreal.*` constructor positional order is not always property-name order.** Rotator is (roll, pitch, yaw); Color is (B, G, R, A). Vector / Vector2D / LinearColor / Quat are property-order-safe. Future code authors: probe before assuming. The probe pattern is one `execute_unreal_python` call (~5 lines) and gives a definitive answer in milliseconds.
+- **Helper-refactor PRs are positive technical-debt sinks.** PR #130's `get_camera_transform` collapse to `_run_marker_pattern` removed ~35 net lines while ADDING two new test cases AND closing a silent-data-corruption bug in `set_camera_transform`. The trade is +tests, +safety, -lines, -duplication — the canonical "good refactor" shape.
+- **Cross-synthetic envelope coupling is a real hazard.** `synthetic_set_camera_transform` reads `synthetic_get_camera_transform`'s envelope directly to support partial-update preservation. Any refactor to either function must consider the other in lockstep. The new "layer 3" check in set is a guard for this exact class of refactor.
+- **Live MCP testing surfaces THREE bug classes pytest alone cannot:** cross-tool convention drift (#126), embedded-Python wrapper convention assumptions (#127, #131), and partial-update second-order data corruption (#130's set-during-marker-not-found). All three are invisible inside the pytest test boundary because tests mock the round-trip with whatever shape they expect.
+
+**Tool / test totals at end of this window:**
+- 76 tools (64 C++ + 12 bridge-side synthetic) — unchanged this window.
+- pytest: 218 → 221 passing (+3 from #130's regression tests; #131 was docs-only).
+- main HEAD: `93889db` end of PR #131 merge; this closing-note PR adds one more merge on top.
+- Drift sweep: 6 signals × 8 files, clean.
+- Live MCP channel: still bound. 5 inspectors + smoke test + camera round-trip + probe sweep all working against the running editor.
+
+**What to watch in next session:**
+
+- **MCP-cache-staleness means PRs #126, #127, #128, #130 are NOT live-verified from this session.** First action on next session start: restart Claude Code if not already restarted, then run the canonical live test panel:
+  - `set_camera_transform({location: {x:1,y:2,z:3}, rotation: {pitch:-20, yaw:45, roll:7}})` then `get_camera_transform()` — values should round-trip cleanly post-#127, and the success envelope should NOT have `ok: True` (post-#130).
+  - `inspect_data_asset({path: '/Game/NoSuch'})` then check error_message starts with `'inspect_data_asset: asset_not_found:'` (post-#126).
+  - Partial update test: `set_camera_transform({location: {x:0,y:0,z:0}})` (omit rotation) during a busy LogPython burst (or simulate via execute_unreal_python flooding) and verify the layer-3 check refuses cleanly with `marker_not_found` in the message rather than zeroing out rotation.
+- **All deferred bridge-audit findings are now CLOSED.** No outstanding "attended-only" items from the autonomous windows. The next attended session can be entirely greenfield work (new C++ handler, new synthetic, new tooling).
+- **The drift_sweep + live-MCP + pytest stack is the new quality apparatus.** Any PR touching `bridge/unreal_claude_mcp_bridge.py` should run all three before merge:
+  - `python scripts/drift_sweep.py` → clean exit on 6 signals × 8 files
+  - `pytest tests/` → all passing
+  - Live MCP round-trip against a bound UE editor for any synthetic that calls into embedded Python or composes other tools
+- **PR budget for today consumed: ~22 / 50.** Generous runway remains. Per the standing budget, future autonomous windows can ship aggressively when leverage is clear.
+- **Thirteenth consecutive closing-note. Five windows in <26h.** The cadence is the documentation. Next session pickup is mechanical from the "what to watch" bullet list above.
