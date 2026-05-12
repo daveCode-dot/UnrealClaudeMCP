@@ -93,6 +93,7 @@ def test_tool_names_are_unique_and_match_handlers():
         "compile_mod_pak",
         "compile_mod_pak_direct",
         "bulk_delete_assets",
+        "bulk_move_assets",
         "inspect_data_asset",
         "inspect_sound_class",
         "inspect_sound_submix",
@@ -1002,6 +1003,162 @@ def test_bulk_delete_assets_allows_consecutive_dots_inside_segment():
     body = json.loads(resp["result"]["content"][0]["text"])
     assert body["ok"] is True
     assert body["deleted"] == 1
+
+
+def test_bulk_move_assets_is_synthetic():
+    """bulk_move_assets is a SYNTHETIC bridge-side handler that mirrors
+    bulk_delete_assets's shape but composes over move_asset. paths AND
+    dest_folder are both required at the schema level (a move with no
+    destination is meaningless)."""
+    t = next((t for t in bridge.TOOLS if t["name"] == "bulk_move_assets"), None)
+    assert t is not None
+    assert set(t["inputSchema"]["required"]) == {"paths", "dest_folder"}
+    assert t["inputSchema"]["properties"]["paths"]["type"] == "array"
+    assert t["inputSchema"]["properties"]["paths"]["items"]["type"] == "string"
+    assert t["inputSchema"]["properties"]["dest_folder"]["type"] == "string"
+    assert t["inputSchema"]["properties"]["continue_on_error"]["type"] == "boolean"
+    assert "bulk_move_assets" in bridge.SYNTHETIC_TOOLS
+    assert bridge.SYNTHETIC_TOOLS["bulk_move_assets"] is bridge.synthetic_bulk_move_assets
+
+
+def test_bulk_move_assets_happy_path():
+    """All moves succeed -> ok=True, moved == total, failed == 0, per-path
+    results carry ok=True + null error fields. The dest_folder field is
+    echoed in the response envelope for caller correlation (move can leave
+    redirectors at the source paths so the caller may want to track where
+    each asset ended up)."""
+    with patch.object(bridge, "call_ue", return_value={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 50, "method": "tools/call",
+            "params": {
+                "name": "bulk_move_assets",
+                "arguments": {
+                    "paths": ["/Game/Foo", "/Game/Bar"],
+                    "dest_folder": "/Game/Archive",
+                },
+            },
+        })
+
+    assert m.call_count == 2
+    assert m.call_args_list[0].args == ("move_asset", {"path": "/Game/Foo", "dest_folder": "/Game/Archive"})
+    assert m.call_args_list[1].args == ("move_asset", {"path": "/Game/Bar", "dest_folder": "/Game/Archive"})
+    assert resp["result"]["isError"] is False
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body == {
+        "ok": True,
+        "total": 2,
+        "moved": 2,
+        "failed": 0,
+        "dest_folder": "/Game/Archive",
+        "results": [
+            {"path": "/Game/Foo", "ok": True, "error_code": None, "error_message": None},
+            {"path": "/Game/Bar", "ok": True, "error_code": None, "error_message": None},
+        ],
+    }
+
+
+def test_bulk_move_assets_partial_failure_stops_when_continue_on_error_false():
+    """First move succeeds, second fails, continue_on_error=False -> stop
+    after the second call. Upstream error code is preserved in the per-path
+    result; the third path is never attempted."""
+    ok_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    err_resp = {"jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32000,
+        "message": "move_asset: name_collision: '/Game/Archive/Bar' already exists",
+    }}
+    with patch.object(bridge, "call_ue", side_effect=[ok_resp, err_resp]) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+            "params": {
+                "name": "bulk_move_assets",
+                "arguments": {
+                    "paths": ["/Game/Foo", "/Game/Bar", "/Game/Baz"],
+                    "dest_folder": "/Game/Archive",
+                    "continue_on_error": False,
+                },
+            },
+        })
+
+    assert m.call_count == 2
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is False
+    assert body["total"] == 3
+    assert body["moved"] == 1
+    assert body["failed"] == 1
+    assert body["dest_folder"] == "/Game/Archive"
+    assert body["results"][0] == {"path": "/Game/Foo", "ok": True, "error_code": None, "error_message": None}
+    assert body["results"][1]["path"] == "/Game/Bar"
+    assert body["results"][1]["ok"] is False
+    assert body["results"][1]["error_code"] == -32000
+
+
+def test_bulk_move_assets_rejects_missing_paths():
+    """Schema enforces paths as required; missing it returns -32602."""
+    resp = bridge.handle({
+        "jsonrpc": "2.0", "id": 52, "method": "tools/call",
+        "params": {"name": "bulk_move_assets", "arguments": {"dest_folder": "/Game/Archive"}},
+    })
+    assert resp["error"]["code"] == -32602
+    assert "paths" in resp["error"]["message"]
+
+
+def test_bulk_move_assets_rejects_missing_dest_folder():
+    """Schema enforces dest_folder as required; missing it returns -32602.
+    bulk_move's distinction from bulk_delete is that move needs a target,
+    so the validator rejects the missing destination before any call_ue."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 53, "method": "tools/call",
+            "params": {"name": "bulk_move_assets", "arguments": {"paths": ["/Game/Foo"]}},
+        })
+
+    assert m.call_count == 0, "validation must short-circuit before any call_ue"
+    assert resp["error"]["code"] == -32602
+    assert "dest_folder" in resp["error"]["message"]
+
+
+def test_bulk_move_assets_rejects_path_with_nul_byte():
+    """Same defensive shape-checks as bulk_delete_assets (PR #115):
+    NUL byte in any path -> -32602, no call_ue dispatched."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 54, "method": "tools/call",
+            "params": {
+                "name": "bulk_move_assets",
+                "arguments": {
+                    "paths": ["/Game/Good", "/Game/Bad\x00Asset"],
+                    "dest_folder": "/Game/Archive",
+                },
+            },
+        })
+
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "paths[1]" in resp["error"]["message"]
+    assert "NUL" in resp["error"]["message"]
+
+
+def test_bulk_move_assets_rejects_dotdot_segment_in_dest_folder():
+    """dest_folder gets the same defensive shape-checks as source paths
+    (NUL byte + `..` segment). A `..`-traversal in the destination is a
+    classic mis-input that should fail loud at the validator rather than
+    silently move assets to an unintended folder."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 55, "method": "tools/call",
+            "params": {
+                "name": "bulk_move_assets",
+                "arguments": {
+                    "paths": ["/Game/Foo"],
+                    "dest_folder": "/Game/Archive/../Secrets",
+                },
+            },
+        })
+
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "dest_folder" in resp["error"]["message"]
+    assert ".." in resp["error"]["message"]
 
 
 def test_inspect_data_asset_is_synthetic():

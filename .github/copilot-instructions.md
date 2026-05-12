@@ -9,7 +9,7 @@ than re-litigating settled patterns.
 
 A UE 5.7 plugin + Python bridge exposing editor automation to any MCP-compliant
 client (Claude Code, Codex CLI, Cursor, Gemini CLI, Continue, …) over a
-localhost TCP socket. **76 tools total: 64 native C++ handlers + 12 bridge-side
+localhost TCP socket. **77 tools total: 64 native C++ handlers + 13 bridge-side
 synthetic tools.** Vendor-neutral by design — the wire protocol is open MCP.
 
 Top-level read-first: [`docs/HANDOFF.md`](../docs/HANDOFF.md) (resumption context),
