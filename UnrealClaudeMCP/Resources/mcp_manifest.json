@@ -618,6 +618,16 @@
       "returns": { "ok": "bool (true only when failed == 0)", "total": "int (paths.length)", "deleted": "int (count of per-path successes)", "failed": "int (count of per-path failures)", "results": "array of {path: string, ok: bool, error_code: int | null, error_message: string | null} - one entry per attempted path; preserves the upstream JSON-RPC error code per failure so callers can distinguish transport-level errors (-32099) from logical delete_asset failures" }
     },
     {
+      "name": "bulk_move_assets",
+      "description": "Move multiple assets into a single destination folder by composing the move_asset C++ handler bridge-side. Each move leaves a redirector at the source per UE's standard move semantics. Returns per-path results plus aggregate counts. By default continues after individual failures (partial success is normal); set continue_on_error=false to stop on first failure. SYNTHETIC bridge-side handler -- mirrors bulk_delete_assets's shape so client code can switch between the two with a one-tool-name change.",
+      "params": {
+        "paths": "array of string (required) - asset object paths to move; each must be a non-empty string; same path-shape rules as bulk_delete_assets (NUL and '..' segments rejected)",
+        "dest_folder": "string (required) - destination folder for ALL moved assets, e.g. '/Game/Archive'; for per-asset destinations call move_asset directly",
+        "continue_on_error": "bool (optional, default true) - when true, keep moving after an individual path fails and surface per-path errors in results; when false, stop on first failure and return partial results"
+      },
+      "returns": { "ok": "bool (true only when failed == 0)", "total": "int (paths.length)", "moved": "int (count of per-path successes)", "failed": "int (count of per-path failures)", "dest_folder": "string (echo of input for caller correlation)", "results": "array of {path: string, ok: bool, error_code: int | null, error_message: string | null} - one entry per attempted path; preserves the upstream JSON-RPC error code per failure" }
+    },
+    {
       "name": "inspect_data_asset",
       "description": "Shallow-reflect a UDataAsset by package path: returns leaf class name, parent class name, package path, and editable property list. SYNTHETIC bridge-side handler that composes execute_unreal_python + get_log_lines via the marker pattern.",
       "params": {

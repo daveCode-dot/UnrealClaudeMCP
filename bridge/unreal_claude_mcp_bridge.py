@@ -168,6 +168,30 @@ TOOLS = [
         },
     },
     {
+        "name": "bulk_move_assets",
+        "description": "Move multiple assets into a single destination folder by composing the move_asset C++ handler bridge-side. Each move leaves a redirector at the source per UE's standard move semantics. Returns per-path results plus aggregate counts. By default continues after individual failures (partial success is normal); set continue_on_error=false to stop on first failure. SYNTHETIC bridge-side handler — mirrors bulk_delete_assets's shape so client code can switch between the two with a one-tool-name change.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Asset object paths to move, e.g. ['/Game/Foo', '/Game/Bar/Baz']. Each path must be a non-empty string; same path-shape rules as bulk_delete_assets (NUL and '..' segments rejected).",
+                },
+                "dest_folder": {
+                    "type": "string",
+                    "description": "Destination folder for ALL moved assets, e.g. '/Game/Archive'. Same folder applies to every path in the call; for per-asset destinations, call move_asset directly.",
+                },
+                "continue_on_error": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "When true (default), keep moving after an individual path fails and surface the per-path errors in the results array. When false, stop after the first failure and return the partial results collected so far.",
+                },
+            },
+            "required": ["paths", "dest_folder"],
+        },
+    },
+    {
         "name": "inspect_data_asset",
         "description": "Shallow-reflect a UDataAsset by package path and return class, parent class, package path, and editable property list (name, Python type, stringified value). SYNTHETIC bridge-side handler (PR #92 language-shim experiment): composes execute_unreal_python + get_log_lines via the marker pattern. Property values for nested structs / arrays / dicts are stringified as '<container:type>' or '<unsupported>' — no recursion. Logical errors (asset not found, marker buffer overflow, payload unparseable) return as ok=False success envelopes; transport-level errors return as JSON-RPC errors.",
         "inputSchema": {
@@ -1913,6 +1937,132 @@ def synthetic_bulk_delete_assets(req_id, args):
     })
 
 
+def synthetic_bulk_move_assets(req_id, args):
+    """Bridge-side composition: move multiple assets into a single destination
+    folder by dispatching `move_asset` per path.
+
+    Mirrors `synthetic_bulk_delete_assets`'s validation + result shape so
+    client code can swap one tool name for the other with no envelope-shape
+    surprises. The same defensive path-shape checks apply (NUL byte and
+    `..`-segment rejection from PR #115).
+
+    Unlike bulk_delete_assets, `dest_folder` is REQUIRED at the schema
+    level: a "move with no destination" is meaningless. Per-path
+    destinations aren't supported in the bulk shape; callers needing
+    that should drive `move_asset` directly. UE's standard move semantics
+    apply (a redirector is left at each source path).
+
+    Synthetic rather than C++ for the same reasons bulk_delete_assets is:
+    the bulk loop is pure protocol-level composition over the existing
+    `move_asset` handler. Bridge-side keeps each move as a discrete UE
+    round-trip so in-editor events fire per-asset and the caller can
+    watch progress via the event bus.
+    """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: invalid_arguments: arguments must be an object",
+        })
+
+    if "paths" not in args:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: missing_required_field: 'paths' must be supplied as a list of non-empty strings",
+        })
+
+    if "dest_folder" not in args:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: missing_required_field: 'dest_folder' must be supplied as a non-empty string",
+        })
+
+    paths = args.get("paths")
+    if not isinstance(paths, list):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: invalid_field: 'paths' must be a list of non-empty strings",
+        })
+
+    dest_folder = args.get("dest_folder")
+    if not isinstance(dest_folder, str) or not dest_folder:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: invalid_field: 'dest_folder' must be a non-empty string",
+        })
+    # Same defensive shape checks on dest_folder as on source paths.
+    if "\x00" in dest_folder:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: invalid_dest_folder: contains a NUL byte",
+        })
+    if any(segment == ".." for segment in dest_folder.split("/")):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: invalid_dest_folder: contains a '..' segment",
+        })
+
+    for i, path in enumerate(paths):
+        if not isinstance(path, str) or not path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_move_assets: invalid_path: paths[{i}] must be a non-empty string",
+            })
+        if "\x00" in path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_move_assets: invalid_path: paths[{i}] contains a NUL byte",
+            })
+        if any(segment == ".." for segment in path.split("/")):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_move_assets: invalid_path: paths[{i}] contains a '..' segment",
+            })
+
+    continue_on_error = args.get("continue_on_error", True)
+    if not isinstance(continue_on_error, bool):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_move_assets: invalid_field: 'continue_on_error' must be a boolean",
+        })
+
+    results = []
+    for path in paths:
+        move_resp = call_ue("move_asset", {"path": path, "dest_folder": dest_folder})
+        if "error" in move_resp:
+            upstream_err = move_resp.get("error", {}) or {}
+            error_code = upstream_err.get("code", -32603)
+            if error_code is None:
+                error_code = -32603
+            results.append({
+                "path": path,
+                "ok": False,
+                "error_code": error_code,
+                "error_message": upstream_err.get("message") or "",
+            })
+            if not continue_on_error:
+                break
+            continue
+
+        results.append({
+            "path": path,
+            "ok": True,
+            "error_code": None,
+            "error_message": None,
+        })
+
+    moved = sum(1 for result in results if result["ok"])
+    failed = sum(1 for result in results if not result["ok"])
+
+    return _wrap_tool_result(req_id, {
+        "ok": failed == 0,
+        "total": len(paths),
+        "moved": moved,
+        "failed": failed,
+        "dest_folder": dest_folder,
+        "results": results,
+    })
+
+
 def synthetic_inspect_data_asset(req_id, args):
     """Bridge-side shim: shallow-reflect a UDataAsset by package path.
 
@@ -2494,6 +2644,7 @@ SYNTHETIC_TOOLS = {
     "compile_mod_pak": synthetic_compile_mod_pak,
     "compile_mod_pak_direct": synthetic_compile_mod_pak_direct,
     "bulk_delete_assets": synthetic_bulk_delete_assets,
+    "bulk_move_assets": synthetic_bulk_move_assets,
     "inspect_data_asset": synthetic_inspect_data_asset,
     "inspect_sound_class": synthetic_inspect_sound_class,
     "inspect_sound_submix": synthetic_inspect_sound_submix,
