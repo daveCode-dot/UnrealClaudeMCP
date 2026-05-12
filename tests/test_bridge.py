@@ -489,6 +489,72 @@ def test_set_camera_transform_is_synthetic():
     assert bridge.SYNTHETIC_TOOLS["set_camera_transform"] is bridge.synthetic_set_camera_transform
 
 
+def test_set_camera_transform_uses_property_set_not_positional_rotator() -> None:
+    """The embedded Python that set_camera_transform sends to UE must use
+    property-set assignment (`_r.pitch = ...; _r.yaw = ...; _r.roll = ...`)
+    rather than the positional `unreal.Rotator(rp, ry, rr)` form.
+
+    Live MCP probe on 2026-05-12 confirmed UE 5.7's Python wrapper takes
+    Rotator(roll, pitch, yaw) POSITIONALLY -- the args follow FRotator's
+    struct-memory order, not the named-property order. The positional form
+    silently scrambles rotation: a caller asking for pitch=-20/yaw=45/roll=0
+    used to get back pitch=45/yaw=0/roll=-20 from the next
+    get_camera_transform. Property-set sidesteps the trap by binding values
+    to named slots directly, so the round-trip is lossless regardless of
+    UE's constructor convention.
+
+    The test inspects the py_code that the synthetic sends to call_ue and
+    asserts the property-set form is used and the positional form is not.
+    """
+    captured: dict[str, str] = {}
+
+    def fake_call_ue(method: str, args: dict):
+        if method == "execute_unreal_python":
+            captured["code"] = args.get("code", "")
+        # Mimic a successful round-trip so set_camera_transform finishes.
+        return {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+
+    with patch.object(bridge, "call_ue", side_effect=fake_call_ue):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+            "params": {
+                "name": "set_camera_transform",
+                "arguments": {
+                    "location": {"x": 1, "y": 2, "z": 3},
+                    "rotation": {"pitch": -20, "yaw": 45, "roll": 7},
+                },
+            },
+        })
+
+    assert resp["result"]["isError"] is False
+    code = captured.get("code", "")
+    assert code, "no execute_unreal_python call was captured"
+
+    # The fix uses an empty constructor + named-property assignment.
+    assert "unreal.Rotator()" in code, (
+        "set_camera_transform must build the Rotator via the empty "
+        "constructor + property assignment; the positional form silently "
+        "scrambles rotation in UE 5.7 Python."
+    )
+    assert "_r.pitch = -20" in code
+    assert "_r.yaw = 45" in code
+    assert "_r.roll = 7" in code
+
+    # And critically: the broken positional form -- Rotator(<num>, <num>, <num>)
+    # with three numeric args -- must NOT be present. Build the regex at
+    # runtime so this test file's own source can never accidentally match
+    # itself when string-searched.
+    import re
+    broken_form = re.compile(
+        r"unreal\." + "Rotator\\(\\s*-?[\\d.]+\\s*,\\s*-?[\\d.]+\\s*,\\s*-?[\\d.]+\\s*\\)"
+    )
+    assert not broken_form.search(code), (
+        "set_camera_transform regressed to positional unreal.Rotator(a,b,c) "
+        "form -- UE 5.7 Python interprets those args as (roll, pitch, yaw), "
+        "not (pitch, yaw, roll), and the rotation will be silently scrambled."
+    )
+
+
 def test_screenshot_actor_is_synthetic():
     """screenshot_actor is a SYNTHETIC bridge-side handler that composes
     focus_actor + get_viewport_screenshot. Requires only 'name'."""
