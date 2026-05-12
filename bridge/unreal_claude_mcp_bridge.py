@@ -168,6 +168,33 @@ TOOLS = [
         },
     },
     {
+        "name": "bulk_rename_assets",
+        "description": "Rename multiple assets in one call by composing the rename_asset C++ handler bridge-side. Each rename leaves a redirector at the source per UE's standard semantics. Schema differs from bulk_delete_assets / bulk_move_assets: takes a `renames` list of {path, new_name} objects so each asset gets a per-entry leaf name. Returns per-entry results plus aggregate counts. Mirrors the bulk_*_assets result-shape convention. SYNTHETIC bridge-side handler.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "renames": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Source asset package path."},
+                            "new_name": {"type": "string", "description": "New leaf name (no '/' or '.')."},
+                        },
+                        "required": ["path", "new_name"],
+                    },
+                    "description": "List of {path, new_name} pairs to rename. Each path must be a non-empty string with no NUL byte and no '..' segment. Each new_name must be a non-empty leaf name (no '/' or '.').",
+                },
+                "continue_on_error": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "When true (default), keep renaming after an individual entry fails and surface per-entry errors in results; when false, stop after the first failure and return partial results.",
+                },
+            },
+            "required": ["renames"],
+        },
+    },
+    {
         "name": "bulk_move_assets",
         "description": "Move multiple assets into a single destination folder by composing the move_asset C++ handler bridge-side. Each move leaves a redirector at the source per UE's standard move semantics. Returns per-path results plus aggregate counts. By default continues after individual failures (partial success is normal); set continue_on_error=false to stop on first failure. SYNTHETIC bridge-side handler — mirrors bulk_delete_assets's shape so client code can switch between the two with a one-tool-name change.",
         "inputSchema": {
@@ -2077,6 +2104,141 @@ def synthetic_bulk_move_assets(req_id, args):
     })
 
 
+def synthetic_bulk_rename_assets(req_id, args):
+    """Bridge-side composition: rename multiple assets in one call by
+    dispatching `rename_asset` per pair.
+
+    Schema differs from `bulk_delete_assets` / `bulk_move_assets` because
+    rename needs a per-asset new leaf name (the destination doesn't
+    factor): `renames` is a list of `{path, new_name}` objects, not a
+    flat `paths` list. Mirrors the result-shape convention so client code
+    that already consumes `bulk_delete_assets` / `bulk_move_assets`
+    responses can read the per-entry `path` / `ok` / `error_code` /
+    `error_message` fields uniformly.
+
+    UE's standard rename semantics apply: each successful rename leaves
+    a redirector at the source path. Callers wanting redirector cleanup
+    should follow up with `fix_up_redirectors` per affected folder.
+
+    Synthetic rather than C++ for the same reasons bulk_delete/move are:
+    the bulk loop is pure protocol-level composition over the existing
+    `rename_asset` handler.
+
+    Validation reuses the defensive shape-checks from PR #115:
+    NUL byte and `..` segment rejected in `path`. `new_name` is
+    separately validated: must be a non-empty string with no '/' or '.'
+    (per rename_asset's leaf-name contract) and no NUL byte.
+    """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_rename_assets: invalid_arguments: arguments must be an object",
+        })
+
+    if "renames" not in args:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_rename_assets: missing_required_field: 'renames' must be supplied as a list of {path, new_name} objects",
+        })
+
+    renames = args.get("renames")
+    if not isinstance(renames, list):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_rename_assets: invalid_field: 'renames' must be a list of {path, new_name} objects",
+        })
+
+    for i, entry in enumerate(renames):
+        if not isinstance(entry, dict):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_rename_assets: invalid_entry: renames[{i}] must be an object with 'path' and 'new_name'",
+            })
+        path = entry.get("path")
+        new_name = entry.get("new_name")
+        if not isinstance(path, str) or not path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_rename_assets: invalid_path: renames[{i}].path must be a non-empty string",
+            })
+        if "\x00" in path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_rename_assets: invalid_path: renames[{i}].path contains a NUL byte",
+            })
+        if any(segment == ".." for segment in path.split("/")):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_rename_assets: invalid_path: renames[{i}].path contains a '..' segment",
+            })
+        if not isinstance(new_name, str) or not new_name:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_rename_assets: invalid_new_name: renames[{i}].new_name must be a non-empty string",
+            })
+        # new_name is a leaf name. UE rejects '/' (path separator) and '.'
+        # (used to separate package path from object name); reject at the
+        # validator with a caller-actionable message rather than forwarding
+        # to rename_asset and surfacing a less clear UE-side error.
+        if "/" in new_name or "." in new_name:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_rename_assets: invalid_new_name: renames[{i}].new_name must not contain '/' or '.' (it is a leaf name, not a path)",
+            })
+        if "\x00" in new_name:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_rename_assets: invalid_new_name: renames[{i}].new_name contains a NUL byte",
+            })
+
+    continue_on_error = args.get("continue_on_error", True)
+    if not isinstance(continue_on_error, bool):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_rename_assets: invalid_field: 'continue_on_error' must be a boolean",
+        })
+
+    results = []
+    for entry in renames:
+        path = entry["path"]
+        new_name = entry["new_name"]
+        rename_resp = call_ue("rename_asset", {"path": path, "new_name": new_name})
+        if "error" in rename_resp:
+            upstream_err = rename_resp.get("error", {}) or {}
+            error_code = upstream_err.get("code", -32603)
+            if error_code is None:
+                error_code = -32603
+            results.append({
+                "path": path,
+                "new_name": new_name,
+                "ok": False,
+                "error_code": error_code,
+                "error_message": upstream_err.get("message") or "",
+            })
+            if not continue_on_error:
+                break
+            continue
+
+        results.append({
+            "path": path,
+            "new_name": new_name,
+            "ok": True,
+            "error_code": None,
+            "error_message": None,
+        })
+
+    renamed = sum(1 for result in results if result["ok"])
+    failed = sum(1 for result in results if not result["ok"])
+
+    return _wrap_tool_result(req_id, {
+        "ok": failed == 0,
+        "total": len(renames),
+        "renamed": renamed,
+        "failed": failed,
+        "results": results,
+    })
+
+
 def synthetic_inspect_data_asset(req_id, args):
     """Bridge-side shim: shallow-reflect a UDataAsset by package path.
 
@@ -2762,6 +2924,7 @@ SYNTHETIC_TOOLS = {
     "compile_mod_pak_direct": synthetic_compile_mod_pak_direct,
     "bulk_delete_assets": synthetic_bulk_delete_assets,
     "bulk_move_assets": synthetic_bulk_move_assets,
+    "bulk_rename_assets": synthetic_bulk_rename_assets,
     "inspect_data_asset": synthetic_inspect_data_asset,
     "inspect_sound_class": synthetic_inspect_sound_class,
     "inspect_sound_submix": synthetic_inspect_sound_submix,

@@ -668,6 +668,15 @@
       "returns": { "ok": "bool", "path": "string", "class": "string (leaf class name)", "package_path": "string (from obj.get_path_name())", "description": "string (asset description; empty when not set)", "exposed_to_library": "bool (whether the function appears in the material-function library)", "library_categories": "array of string (Text values stringified)", "inputs": "array of {name: string, type: string (always 'FunctionInput'), input_type: string (enum stringified)} - one entry per MaterialExpressionFunctionInput discovered in function_expressions", "outputs": "array of {name: string, type: string (always 'FunctionOutput')} - one entry per MaterialExpressionFunctionOutput", "additional_properties": "array of {name: string, type: string, value: string} - excludes the curated names", "error_code": "string (only on ok=False; one of 'asset_not_found', 'wrong_asset_type', 'marker_not_found', 'invalid_json')", "error_message": "string (only on ok=False)", "actual_class": "string (only on wrong_asset_type)" }
     },
     {
+      "name": "bulk_rename_assets",
+      "description": "Rename multiple assets by composing the rename_asset C++ handler bridge-side. Takes a `renames` list of {path, new_name} pairs (each asset gets a per-entry new leaf name; the folder is unchanged). Each successful rename leaves a redirector at the source per UE's standard semantics. Returns per-entry results plus aggregate counts. SYNTHETIC bridge-side handler -- third member of the bulk_*_assets family after delete + move.",
+      "params": {
+        "renames": "array of {path: string, new_name: string} (required) - per-entry rename pairs; path must be a non-empty string with no NUL byte and no '..' segment; new_name must be a non-empty leaf name with no '/' or '.'",
+        "continue_on_error": "bool (optional, default true) - when true, keep renaming after an individual entry fails and surface per-entry errors in results; when false, stop on first failure and return partial results"
+      },
+      "returns": { "ok": "bool (true only when failed == 0)", "total": "int (renames.length)", "renamed": "int (count of per-entry successes)", "failed": "int (count of per-entry failures)", "results": "array of {path: string, new_name: string, ok: bool, error_code: int | null, error_message: string | null} - one entry per attempted rename; preserves the upstream JSON-RPC error code per failure" }
+    },
+    {
       "name": "inspect_metasound",
       "description": "Inspect a MetaSoundSource or MetaSoundPatch asset by package path: returns leaf class name, package path, and additional editor-accessible UPROPERTYs via dir() permissive enumeration. Accepts either MetaSoundSource (emitter-attached) or MetaSoundPatch (reusable subgraph). Graph structure is NOT reflected here (deferred). SYNTHETIC bridge-side handler that composes execute_unreal_python + get_log_lines via the marker pattern.",
       "params": {

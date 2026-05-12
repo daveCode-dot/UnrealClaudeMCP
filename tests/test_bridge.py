@@ -94,6 +94,7 @@ def test_tool_names_are_unique_and_match_handlers():
         "compile_mod_pak_direct",
         "bulk_delete_assets",
         "bulk_move_assets",
+        "bulk_rename_assets",
         "inspect_data_asset",
         "inspect_sound_class",
         "inspect_sound_submix",
@@ -1160,6 +1161,155 @@ def test_bulk_move_assets_rejects_dotdot_segment_in_dest_folder():
     assert resp["error"]["code"] == -32602
     assert "dest_folder" in resp["error"]["message"]
     assert ".." in resp["error"]["message"]
+
+
+def test_bulk_rename_assets_is_synthetic():
+    """bulk_rename_assets is the third member of the bulk_*_assets family
+    (after delete + move). Schema differs from its siblings: takes a
+    `renames` list of {path, new_name} objects so each asset gets a
+    per-entry leaf name."""
+    t = next((t for t in bridge.TOOLS if t["name"] == "bulk_rename_assets"), None)
+    assert t is not None
+    assert t["inputSchema"]["required"] == ["renames"]
+    assert t["inputSchema"]["properties"]["renames"]["type"] == "array"
+    assert t["inputSchema"]["properties"]["renames"]["items"]["type"] == "object"
+    assert set(t["inputSchema"]["properties"]["renames"]["items"]["required"]) == {"path", "new_name"}
+    assert t["inputSchema"]["properties"]["continue_on_error"]["type"] == "boolean"
+    assert "bulk_rename_assets" in bridge.SYNTHETIC_TOOLS
+    assert bridge.SYNTHETIC_TOOLS["bulk_rename_assets"] is bridge.synthetic_bulk_rename_assets
+
+
+def test_bulk_rename_assets_happy_path():
+    """All renames succeed -> ok=True, renamed == total, per-entry results
+    include both path AND new_name so the caller can build a rename map
+    from the response envelope alone."""
+    with patch.object(bridge, "call_ue", return_value={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 60, "method": "tools/call",
+            "params": {
+                "name": "bulk_rename_assets",
+                "arguments": {
+                    "renames": [
+                        {"path": "/Game/Foo", "new_name": "FooRenamed"},
+                        {"path": "/Game/Bar", "new_name": "BarRenamed"},
+                    ],
+                },
+            },
+        })
+
+    assert m.call_count == 2
+    assert m.call_args_list[0].args == ("rename_asset", {"path": "/Game/Foo", "new_name": "FooRenamed"})
+    assert m.call_args_list[1].args == ("rename_asset", {"path": "/Game/Bar", "new_name": "BarRenamed"})
+    assert resp["result"]["isError"] is False
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is True
+    assert body["total"] == 2
+    assert body["renamed"] == 2
+    assert body["failed"] == 0
+    assert body["results"][0] == {
+        "path": "/Game/Foo", "new_name": "FooRenamed",
+        "ok": True, "error_code": None, "error_message": None,
+    }
+
+
+def test_bulk_rename_assets_partial_failure_stops_when_continue_on_error_false():
+    """First rename succeeds, second fails, continue_on_error=False stops
+    after the second call. Upstream error code preserved per entry."""
+    ok_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    err_resp = {"jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32000,
+        "message": "rename_asset: name_collision: '/Game/BarRenamed' already exists",
+    }}
+    with patch.object(bridge, "call_ue", side_effect=[ok_resp, err_resp]) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 61, "method": "tools/call",
+            "params": {
+                "name": "bulk_rename_assets",
+                "arguments": {
+                    "renames": [
+                        {"path": "/Game/Foo", "new_name": "FooRenamed"},
+                        {"path": "/Game/Bar", "new_name": "BarRenamed"},
+                        {"path": "/Game/Baz", "new_name": "BazRenamed"},
+                    ],
+                    "continue_on_error": False,
+                },
+            },
+        })
+
+    assert m.call_count == 2
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is False
+    assert body["total"] == 3
+    assert body["renamed"] == 1
+    assert body["failed"] == 1
+    assert body["results"][1]["path"] == "/Game/Bar"
+    assert body["results"][1]["new_name"] == "BarRenamed"
+    assert body["results"][1]["ok"] is False
+    assert body["results"][1]["error_code"] == -32000
+
+
+def test_bulk_rename_assets_rejects_missing_renames():
+    """Schema enforces renames as required."""
+    resp = bridge.handle({
+        "jsonrpc": "2.0", "id": 62, "method": "tools/call",
+        "params": {"name": "bulk_rename_assets", "arguments": {}},
+    })
+    assert resp["error"]["code"] == -32602
+    assert "renames" in resp["error"]["message"]
+
+
+def test_bulk_rename_assets_rejects_new_name_with_slash_or_dot():
+    """rename_asset takes a LEAF name -- '/' and '.' are not allowed.
+    Reject at the validator with a caller-actionable message rather than
+    forwarding to rename_asset and surfacing a less clear UE-side error.
+    The check covers both '/' (path separator) and '.' (used to separate
+    package path from object name in UE asset references)."""
+    with patch.object(bridge, "call_ue") as m:
+        # Slash in new_name
+        resp1 = bridge.handle({
+            "jsonrpc": "2.0", "id": 63, "method": "tools/call",
+            "params": {
+                "name": "bulk_rename_assets",
+                "arguments": {"renames": [{"path": "/Game/Foo", "new_name": "Sub/Folder"}]},
+            },
+        })
+        # Dot in new_name
+        resp2 = bridge.handle({
+            "jsonrpc": "2.0", "id": 64, "method": "tools/call",
+            "params": {
+                "name": "bulk_rename_assets",
+                "arguments": {"renames": [{"path": "/Game/Foo", "new_name": "Foo.bar"}]},
+            },
+        })
+
+    assert m.call_count == 0
+    for resp in (resp1, resp2):
+        assert resp["error"]["code"] == -32602
+        assert "new_name" in resp["error"]["message"]
+        assert "'/' or '.'" in resp["error"]["message"]
+
+
+def test_bulk_rename_assets_rejects_path_with_nul_byte():
+    """Same defensive shape-checks as bulk_delete/move: NUL byte in path
+    -> -32602 with the entry index, no call_ue dispatched."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 65, "method": "tools/call",
+            "params": {
+                "name": "bulk_rename_assets",
+                "arguments": {
+                    "renames": [
+                        {"path": "/Game/Good", "new_name": "GoodNew"},
+                        {"path": "/Game/Bad\x00Asset", "new_name": "BadNew"},
+                    ],
+                },
+            },
+        })
+
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "renames[1].path" in resp["error"]["message"]
+    assert "NUL" in resp["error"]["message"]
 
 
 def test_inspect_data_asset_is_synthetic():
