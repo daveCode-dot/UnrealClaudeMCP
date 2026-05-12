@@ -44,7 +44,7 @@ The plugin sidesteps these limits by calling UE's native C++ APIs directly insid
 
 ## Tools
 
-**78 tools total.** 64 are native C++ handlers registered by the plugin at editor startup; 14 are bridge-side synthetic tools (`wait_for_events`, `get_camera_transform`, `set_camera_transform`, `screenshot_actor`, `compile_mod_pak`, `compile_mod_pak_direct`, `bulk_delete_assets`, `bulk_move_assets`, `inspect_data_asset`, `inspect_sound_class`, `inspect_sound_submix`, `inspect_audio_bus`, `inspect_material_function`, `inspect_metasound`) that compose existing handlers without a dedicated UE round-trip (or, for `compile_mod_pak` and `compile_mod_pak_direct`, shell out to RunUAT or UnrealPak entirely outside the UE process) — see `bridge/unreal_claude_mcp_bridge.py`'s `SYNTHETIC_TOOLS`. Per-tool JSON schemas and examples live in [`docs/TOOLS.md`](docs/TOOLS.md). Grouped overview:
+**79 tools total.** 64 are native C++ handlers registered by the plugin at editor startup; 15 are bridge-side synthetic tools (`wait_for_events`, `get_camera_transform`, `set_camera_transform`, `screenshot_actor`, `compile_mod_pak`, `compile_mod_pak_direct`, `bulk_delete_assets`, `bulk_move_assets`, `bulk_rename_assets`, `inspect_data_asset`, `inspect_sound_class`, `inspect_sound_submix`, `inspect_audio_bus`, `inspect_material_function`, `inspect_metasound`) that compose existing handlers without a dedicated UE round-trip (or, for `compile_mod_pak` and `compile_mod_pak_direct`, shell out to RunUAT or UnrealPak entirely outside the UE process) — see `bridge/unreal_claude_mcp_bridge.py`'s `SYNTHETIC_TOOLS`. Per-tool JSON schemas and examples live in [`docs/TOOLS.md`](docs/TOOLS.md). Grouped overview:
 
 ### Python execution
 
@@ -251,10 +251,10 @@ tests/                            Pytest suite for the bridge (no UE required)
 | | |
 |---|---|
 | **Latest release** | v0.9.1 — 2026-05-08 |
-| **Tools** | 78 live (64 native C++ handlers + 14 bridge-side synthetic tools) |
+| **Tools** | 79 live (64 native C++ handlers + 15 bridge-side synthetic tools) |
 | **Tested on** | UE 5.7.4 / Windows 11 / Visual Studio Build Tools 2022 / MSVC 14.44 / NETFXSDK 4.8.1 |
 | **Build status** | Plugin compiles + loads against UE 5.7.4 host on Windows 11; 64 handlers register, TCP server binds `127.0.0.1:18888`, bridge round-trip via `tools/call list_tools` returns full registry. |
-| **Bridge tests** | 232 pytest cases, ~99% coverage |
+| **Bridge tests** | 238 pytest cases, ~99% coverage |
 | **CI** | GitHub Actions on every push and PR |
 
 ---
