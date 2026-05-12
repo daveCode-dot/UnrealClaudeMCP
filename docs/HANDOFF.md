@@ -1237,3 +1237,41 @@ The autopilot-friendly version of this playbook fits in one session per new tool
 - **No `inspect_*` deferred-handler remains from the original HANDOFF roadmap.** All audio + material function + metasound shipped. Future `inspect_*` candidates would be new categories (e.g. `inspect_world_partition`, `inspect_blueprint_function_signature`, `inspect_input_asset`, `inspect_subsystem`).
 - **C++-only deferred handlers remain.** `Sequencer keyframe authoring` and `Movie Render Queue` both need cold-compile cycles and Codex (per the multi-agent partitioning). Out of scope for autopilot windows; queue for an attended session with explicit C++ go-ahead.
 - **Fifteenth consecutive closing-note.** Cadence intact. Tool count growth this session: 75 → 79 (+4, three of which were entirely-new synthetics shipped today: bulk_move, inspect_metasound, bulk_rename; one came via David's #102 cherry-pick: compile_mod_pak_direct).
+
+**Session 2026-05-12 (autopilot continuation — `bulk_duplicate_assets` shipped; bulk_*_assets family complete):**
+
+**PR #138** — `bulk_duplicate_assets` synthetic. Fourth + final member of the `bulk_*_assets` family. Composes `duplicate_asset` bridge-side. Schema mirrors `bulk_rename_assets`'s per-entry mapping but uses `dest_path` (full destination path) instead of `new_name` (leaf name). Unlike rename/move, duplicate does NOT leave a redirector at the source — the source is preserved at its current path and a new copy is created at `dest_path`. Five new tests cover schema + happy path + partial-failure-stops + missing duplicates + `..` in dest_path.
+
+**The `bulk_*_assets` family is now COMPLETE:**
+
+| Tool | Composes | Shape | Redirector at source? |
+|---|---|---|---|
+| `bulk_delete_assets` | `delete_asset` | flat `paths` list | n/a (source is destroyed) |
+| `bulk_move_assets` | `move_asset` | `paths` + single `dest_folder` | yes |
+| `bulk_rename_assets` | `rename_asset` | `renames` mapping (`path` → `new_name`) | yes |
+| `bulk_duplicate_assets` | `duplicate_asset` | `duplicates` mapping (`path` → `dest_path`) | **no** (source preserved) |
+
+Every standard asset-lifecycle operation now has a bulk variant with consistent shape + validation. The asymmetries between them (flat list vs mapping, `dest_folder` vs per-entry `dest_path`, redirector behaviour) trace exactly to differences in the underlying single-asset handlers — the bulk versions never invent new semantics, they just batch.
+
+**Tool / test totals at PR #138 merge:**
+- 80 tools (64 C++ + 16 bridge-side synthetic) — up from 79 at start of this window.
+- pytest: 238 → 243 (+5 bulk_duplicate tests).
+- main HEAD: `8cbed44` end of PR #138 merge; this closing-note PR adds one more merge on top.
+- Drift sweep: 6 signals × 8 files, clean.
+
+**Cumulative session 2026-05-12 (all windows combined to-date):**
+
+- **29 PRs merged** (#110-#138). One more closing-note in flight.
+- **75 → 80 tools** (+5). Of those: 1 from David's #102 cherry-pick (`compile_mod_pak_direct`), 4 net-new synthetics shipped autopilot (`bulk_move_assets`, `inspect_metasound`, `bulk_rename_assets`, `bulk_duplicate_assets`).
+- **11 → 16 synthetics** (+5; the bulk_* family went from "1 tool" to "complete 4-tool family" in this session).
+- **202 → 243 pytest cases** (+41).
+- **All deferred bridge-audit findings closed**, two LIVE-FOUND bugs fixed (#126 inspect_* message shape, #127 Rotator arg order).
+- **One trap-table class documented** (UE 5.7 Python wrapper constructor positional-arg order).
+- **22 PRs MCP-cache-stale** in current session bridge process (every code-touching merge since session-start). Single restart unblocks all simultaneously.
+
+**What to watch in next session (refreshed):**
+
+- **First action: restart Claude Code to live-verify the 22 bridge-touching PRs.** Run the canonical test panel: list_tools (expect 80), get_camera_transform / set_camera_transform round-trip (expect lossless rotation), inspect_data_asset (`/Game/NoSuch`) (expect `inspect_data_asset: asset_not_found:` shape), bulk_delete/move/rename/duplicate with bad inputs (expect -32602 with the documented messages), inspect_metasound against any MetaSound asset in /Game/ (expect leaf-class + package_path + properties).
+- **All deferred-handler items from the original HANDOFF roadmap are now CLOSED or in C++-only territory.** No outstanding bridge-side synthetics. C++-only items remaining: Sequencer keyframe authoring, Movie Render Queue. Both need attended cold-compile + Codex per the multi-agent partitioning.
+- **The `bulk_*_assets` family completion is a natural milestone.** Future bulk_* candidates (e.g. `bulk_inspect_*`, `bulk_set_*`) follow the same playbook but layer over composed-inspect or property-mutation handlers; cost is well-understood.
+- **Sixteenth consecutive closing-note.** Session 2026-05-12 has now spanned 7+ documented windows. The cadence is the project rhythm.
