@@ -1232,21 +1232,27 @@ def synthetic_wait_for_events(req_id, args):
 def synthetic_get_camera_transform(req_id, args):
     """Bridge-side shim: read the level-editor viewport camera transform.
 
-    Implementation pattern (the canonical "Python shim" in the
-    LANGUAGE-CHOICE-RETROSPECTIVE.md addendum from PR #46):
-      1. Generate a UUID marker token (per-call unique)
-      2. Build Python that calls UnrealEditorSubsystem.get_level_viewport_camera_info()
-         and emits the result as `unreal.log("__CAM_<marker>__" + json + "__END__")`
-      3. Run via execute_unreal_python (one UE round-trip)
-      4. Read recent LogPython lines via get_log_lines (second UE round-trip)
-      5. Find the marker, parse the JSON payload, return
+    Refactored on 2026-05-12 (deferred bridge-audit #3) to use the shared
+    `_run_marker_pattern` helper instead of hand-rolling the marker pattern.
+    Behaviour changes from the pre-refactor hand-rolled form:
 
-    The two-round-trip cost vs an equivalent C++ handler is the main trade-off
-    measured in the experiment. Marker-pattern reliability risks (log buffer
-    overflow between exec and log read) are mitigated by the per-call UUID
-    and the LogCapture ring's 1000-line capacity.
+    - On success: response envelope no longer wraps the payload in
+      `{ok: True, ...data}`. The result is now `{location, rotation}`
+      directly. (No test or known caller pinned the `ok: True` key.)
+    - On `marker_not_found`: now returns a logical-error envelope
+      `{ok: False, error_code: 'marker_not_found', ...}` instead of a
+      JSON-RPC `-32603` transport error. Matches every other
+      `_run_marker_pattern` caller and is the right shape for retry logic
+      ("not a transport problem, just retry").
+    - On `marker_truncated` / `invalid_json`: same logical-error envelope
+      shape (added in PR #128).
+
+    `synthetic_set_camera_transform` is updated in lockstep to handle the
+    new logical-error envelope shape -- it previously checked only for
+    transport errors and would have silently snapped the camera to (0,0,0)
+    if a `marker_not_found` envelope was returned from get.
     """
-    marker = uuid.uuid4().hex[:12]
+    marker_prefix = f"__CAM_{uuid.uuid4().hex[:12]}__"
     py_code = (
         "import unreal, json\n"
         "sub = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)\n"
@@ -1255,53 +1261,9 @@ def synthetic_get_camera_transform(req_id, args):
         "    'location': {'x': loc.x, 'y': loc.y, 'z': loc.z},\n"
         "    'rotation': {'pitch': rot.pitch, 'yaw': rot.yaw, 'roll': rot.roll},\n"
         "}\n"
-        f"unreal.log('__CAM_{marker}__' + json.dumps(_data) + '__END__')\n"
+        f"unreal.log('{marker_prefix}' + json.dumps(_data) + '__END__')\n"
     )
-
-    exec_resp = call_ue("execute_unreal_python", {"code": py_code})
-    if "error" in exec_resp:
-        return make_response(req_id, error=exec_resp["error"])
-    if not exec_resp.get("result", {}).get("ok", False):
-        output = exec_resp.get("result", {}).get("output", "")
-        return make_response(req_id, error={
-            "code": -32603,
-            "message": f"get_camera_transform: python_failed: {output}",
-        })
-
-    # Fetch the FULL ring (1000 lines) -- the LogCapture ring's capacity. A
-    # smaller window risked missing the marker if >window LogPython lines
-    # arrived between our exec and our read. (Caught by Codex P2 + Gemini
-    # medium on PR #46, both bots converged on the same fix.)
-    log_resp = call_ue("get_log_lines", {"category_filter": "LogPython", "count": 1000})
-    if "error" in log_resp:
-        return make_response(req_id, error=log_resp["error"])
-
-    lines = log_resp.get("result", {}).get("lines", []) or []
-    needle = f"__CAM_{marker}__"
-    end_token = "__END__"
-    for entry in reversed(lines):
-        msg = entry.get("message", "")
-        if needle in msg:
-            start = msg.index(needle) + len(needle)
-            end = msg.find(end_token, start)
-            if end < 0:
-                continue
-            payload = msg[start:end]
-            try:
-                data = json.loads(payload)
-            except json.JSONDecodeError as e:
-                return make_response(req_id, error={
-                    "code": -32603,
-                    "message": f"get_camera_transform: marker_parse_failed: {e}",
-                })
-            return _wrap_tool_result(req_id, {"ok": True, **data})
-
-    return make_response(req_id, error={
-        "code": -32603,
-        "message": (f"get_camera_transform: marker_not_found: '{needle}' did not appear in "
-                    f"last {len(lines)} LogPython lines (log buffer may have overflowed; "
-                    "retry typically resolves)"),
-    })
+    return _run_marker_pattern(req_id, "get_camera_transform", marker_prefix, py_code)
 
 
 def synthetic_set_camera_transform(req_id, args):
@@ -1358,21 +1320,38 @@ def synthetic_set_camera_transform(req_id, args):
     current_rot = None
     if location is None or rotation is None:
         get_resp_envelope = synthetic_get_camera_transform(0, {})
+        # Layer 1: transport-level failure (UE down, call_ue couldn't reach).
         if "error" in get_resp_envelope:
             return make_response(req_id, error={
                 "code": -32603,
                 "message": (f"set_camera_transform: failed to read current camera state for "
                             f"partial-update preservation: {get_resp_envelope['error'].get('message', '')}"),
             })
+        # Layer 2: parse the success envelope's inner payload.
         try:
             inner = json.loads(get_resp_envelope["result"]["content"][0]["text"])
-            current_loc = inner.get("location") or {}
-            current_rot = inner.get("rotation") or {}
         except (KeyError, IndexError, json.JSONDecodeError) as e:
             return make_response(req_id, error={
                 "code": -32603,
                 "message": f"set_camera_transform: failed to parse current camera state: {e}",
             })
+        # Layer 3: logical-error envelope from the marker-pattern helper
+        # (post-refactor of get_camera_transform on 2026-05-12). The
+        # underlying read could have hit marker_not_found / marker_truncated /
+        # invalid_json -- previously these were JSON-RPC transport errors
+        # caught by layer 1, but the helper-refactor moved them to
+        # ok-envelope-with-error_code. Without this layer, the code would
+        # fall through to `inner.get("location") or {}` -> empty dict ->
+        # camera silently snaps to (0, 0, 0) on the omitted side.
+        if isinstance(inner, dict) and (inner.get("ok") is False or "error_code" in inner):
+            return make_response(req_id, error={
+                "code": -32603,
+                "message": (f"set_camera_transform: get_camera_transform returned "
+                            f"{inner.get('error_code', 'unknown')} -- cannot preserve omitted "
+                            f"side of partial update: {inner.get('error_message', '')}"),
+            })
+        current_loc = inner.get("location") or {}
+        current_rot = inner.get("rotation") or {}
 
     try:
         if location is not None:
