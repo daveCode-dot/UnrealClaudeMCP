@@ -1197,3 +1197,43 @@ User extended permission again ("Go autopilot for everything"). One concrete new
 - **`bulk_rename_assets` rounds out the `bulk_*` family.** Twin to `bulk_move_assets`, takes a `{path → new_name}` mapping. Same validator scaffold applies; only the call_ue per-item shape changes.
 - **MCP-cache-staleness now affects 4 PRs from this morning** (#126, #127, #128, #130) PLUS PR #133. First action on next session start: restart Claude Code, then live-verify each via the canonical test panel.
 - **Fourteenth consecutive closing-note.** Cadence intact. Next session pickup is mechanical from this entry's "what to watch" list.
+
+**Session 2026-05-12 (autopilot continuation — `inspect_metasound` + `bulk_rename_assets` shipped):**
+
+User extended permission ("Go autopilot for everything"). Two new synthetic tools shipped + their tests + the manifest + 8 docs each bumped per the now-established new-tool playbook.
+
+**Shipped (2 PRs):**
+
+- **PR #135** — `inspect_metasound` synthetic. Accepts either `MetaSoundSource` (emitter-attached) or `MetaSoundPatch` (reusable subgraph) — both exist as separate Python-exposed classes in UE 5.7's Metasound plugin. Live probe in the running editor confirmed both are available (Metasound plugin enabled-by-default). Mirrors the audio-inspector trio's pattern (`inspect_sound_class` / `_submix` / `_audio_bus`) — marker-pattern shim, `asset_not_found` / `wrong_asset_type` / `metasound_unavailable` / `marker_not_found` / `marker_truncated` / `invalid_json` logical errors, `additional_properties` via `dir()` permissive enumeration. Graph structure (nodes / connections) intentionally NOT reflected — that requires a dedicated traversal pass and is deferred. Four new tests. **Closes the last `inspect_*` deferred-handler from the original HANDOFF roadmap.**
+
+- **PR #136** — `bulk_rename_assets` synthetic. Third member of the `bulk_*_assets` family (after `bulk_delete_assets` PR #90 and `bulk_move_assets` PR #133). Schema differs: takes a `renames` list of `{path, new_name}` objects so each asset gets a per-entry leaf name. Validator combines PR #115's path shape-checks (NUL + `..`) with new_name-specific rules (no `/` or `.`, since `rename_asset` takes a leaf name not a path). UE's standard rename semantics apply: each successful rename leaves a redirector at the source. Six new tests. **The bulk_* family is now a complete triplet covering the common batch operations.**
+
+**Tool / test totals at PR #136 merge:**
+- 79 tools (64 C++ + 15 bridge-side synthetic) — up from 77 at start of this window.
+- pytest: 228 → 238 (+4 inspect_metasound tests, +6 bulk_rename_assets tests).
+- main HEAD: `ee6d4bc` end of PR #136 merge; this closing-note PR adds one more merge on top.
+- Drift sweep: 6 signals × 8 files, clean.
+
+**New-tool playbook is now mechanical and reusable:**
+
+For any future synthetic-tool addition, the pattern is fixed:
+1. Add `synthetic_<name>(req_id, args)` function in `bridge/unreal_claude_mcp_bridge.py` (mirror the closest existing synthetic for the shape)
+2. Add TOOLS schema entry (input + required fields)
+3. Add to `SYNTHETIC_TOOLS = {...}` dispatch dict
+4. Bump `EXPECTED_SYNTHETIC_TOOL_COUNT` in `tests/conftest.py`
+5. Add manifest entry in `Resources/mcp_manifest.json` (mirror existing structure)
+6. Add tool name to the expected-set in `test_tool_names_are_unique_and_match_handlers`
+7. Add behavioral tests in `tests/test_bridge.py` (schema + happy path + at least one error path + at least one input-validation path)
+8. Run `python scripts/drift_sweep.py` — flags every doc surface that needs the count bump (typically 8 files); apply
+9. Run `pytest tests/` — full suite green
+10. Commit + push + open PR; CI matrix + Gemini auto-review + merge with `--admin` after green
+
+The autopilot-friendly version of this playbook fits in one session per new tool, ~50 lines of bridge code + ~80 lines of tests + ~10 lines of distributed doc bumps.
+
+**What to watch in next session:**
+
+- **MCP-cache-staleness now affects 7 PRs from these morning windows:** #126 (inspect alignment), #127 (Rotator), #128 (marker split), #130 (camera refactor), #133 (bulk_move), #135 (inspect_metasound), #136 (bulk_rename). First action on next session start: restart Claude Code, then live-verify each via the canonical test panel (set + get camera transform round-trip, inspect_data_asset error message shape, bulk_rename of a known asset). Restart unblocks all seven simultaneously.
+- **`bulk_duplicate_assets` is the obvious next bulk_* twin.** Would round the family to four. Takes per-entry `{path, dest_path}` mapping (duplicate creates a new asset at the destination; no redirector left at the source).
+- **No `inspect_*` deferred-handler remains from the original HANDOFF roadmap.** All audio + material function + metasound shipped. Future `inspect_*` candidates would be new categories (e.g. `inspect_world_partition`, `inspect_blueprint_function_signature`, `inspect_input_asset`, `inspect_subsystem`).
+- **C++-only deferred handlers remain.** `Sequencer keyframe authoring` and `Movie Render Queue` both need cold-compile cycles and Codex (per the multi-agent partitioning). Out of scope for autopilot windows; queue for an attended session with explicit C++ go-ahead.
+- **Fifteenth consecutive closing-note.** Cadence intact. Tool count growth this session: 75 → 79 (+4, three of which were entirely-new synthetics shipped today: bulk_move, inspect_metasound, bulk_rename; one came via David's #102 cherry-pick: compile_mod_pak_direct).
