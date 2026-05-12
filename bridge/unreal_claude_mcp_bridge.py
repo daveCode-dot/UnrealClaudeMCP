@@ -13,9 +13,9 @@ plugin speaks raw JSON-RPC over a local TCP socket (default
 Behaviour:
   - "initialize"             returned synthetically (does NOT hit the UE server)
   - "notifications/*"        consumed silently
-  - "tools/list"             returns a static list of all 80 tools (64
+  - "tools/list"             returns a static list of all 86 tools (69
                              dispatched to the UE plugin's C++ handlers
-                             plus 16 bridge-side synthetic tools served by
+                             plus 17 bridge-side synthetic tools served by
                              SYNTHETIC_TOOLS without crossing the wire as
                              a single UE round-trip)
   - "tools/call"             unpacks {name, arguments} and forwards to the
@@ -45,19 +45,20 @@ SERVER_NAME = "unreal-claude-mcp"
 SERVER_VERSION = "0.9.1"
 
 # Mirror of UnrealClaudeMCP/Resources/mcp_manifest.json - kept in sync manually.
-# 80 tool entries total. 64 are dispatched straight to UE C++ handlers
+# 86 tool entries total. 69 are dispatched straight to UE C++ handlers
 # (see UnrealClaudeMCPModule.cpp's Reg.Register(...) block). The remaining
-# 16 -- wait_for_events, get_camera_transform, set_camera_transform,
+# 17 -- wait_for_events, get_camera_transform, set_camera_transform,
 # screenshot_actor, compile_mod_pak, compile_mod_pak_direct,
 # bulk_delete_assets, bulk_move_assets, bulk_rename_assets,
-# bulk_duplicate_assets, inspect_data_asset, inspect_sound_class,
-# inspect_sound_submix, inspect_audio_bus, inspect_material_function,
-# inspect_metasound -- are bridge-side synthetic tools served by
-# SYNTHETIC_TOOLS (see below) without a dedicated UE handler: they either
-# compose existing handlers (focus + screenshot, repeated poll, loop over
-# delete_asset / move_asset / rename_asset / duplicate_asset), run the
-# matching unreal.* Python via execute_unreal_python with the marker
-# pattern (most inspect_* shims), or (compile_mod_pak / compile_mod_pak_direct)
+# bulk_duplicate_assets, bulk_inspect_assets, inspect_data_asset,
+# inspect_sound_class, inspect_sound_submix, inspect_audio_bus,
+# inspect_material_function, inspect_metasound -- are bridge-side
+# synthetic tools served by SYNTHETIC_TOOLS (see below) without a
+# dedicated UE handler: they either compose existing handlers (focus +
+# screenshot, repeated poll, loop over delete_asset / move_asset /
+# rename_asset / duplicate_asset / inspect_asset), run the matching
+# unreal.* Python via execute_unreal_python with the marker pattern
+# (most inspect_* shims), or (compile_mod_pak / compile_mod_pak_direct)
 # shell out to RunUAT.bat entirely outside the UE process.
 TOOLS = [
     {
@@ -67,6 +68,62 @@ TOOLS = [
             "type": "object",
             "properties": {"code": {"type": "string", "description": "Python source to execute"}},
             "required": ["code"],
+        },
+    },
+    {
+        "name": "get_engine_version",
+        "description": "Structured engine-version snapshot — major / minor / patch / changelist / branch as separate fields, plus a 'minor_dotted' convenience like '5.7'. Use this when the LLM needs to branch on engine version without parsing get_project_summary's single 'engine_version' string.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "list_levels",
+        "description": "Enumerate every UWorld asset (level) in the project. Optional path_under defaults to '/Game/'; optional name_contains is case-insensitive substring filter. Closes the gap where load_level_by_path required the caller to already know the package path.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path_under": {"type": "string", "description": "Recursive package-path filter; defaults to /Game/. Must start with /Game/ or /Engine/."},
+                "name_contains": {"type": "string", "description": "Case-insensitive substring filter on the level asset name."},
+            },
+        },
+    },
+    {
+        "name": "save_dirty_assets",
+        "description": "Persist every in-memory-modified asset + map to disk. Same as editor 'Save All'. Closes the gap where edit-side tools (set_actor_property, set_mi_parameter, edit_widget_tree, etc.) mutated UObjects but left them dirty. Optional include_levels + include_content default to true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_levels": {"type": "boolean", "description": "Save dirty .umap level packages (default true)."},
+                "include_content": {"type": "boolean", "description": "Save dirty .uasset content packages (default true)."},
+            },
+        },
+    },
+    {
+        "name": "get_selected_actors",
+        "description": "Return name/label/class/transform of every actor currently selected in the editor's World Outliner / viewport. Companion to apply_python_to_selection — lets the LLM observe what is selected before running code against it.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "inspect_input_mappings",
+        "description": "Dump the project's legacy UInputSettings: action_mappings (name+key+modifier flags) and axis_mappings (name+key+scale), plus a uses_enhanced_input flag that signals whether the project has migrated to the Enhanced Input system. The #1 context an LLM needs before touching gameplay code.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "bulk_inspect_assets",
+        "description": "Inspect multiple assets in one MCP call by composing the inspect_asset C++ handler bridge-side. Returns per-path inspection data plus aggregate counts; partial failures isolated per result. Mirrors the bulk_*_assets family shape. Use for pipeline audits (e.g. enumerate 500 textures and report which lack a power-of-two source).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Asset object paths to inspect (each non-empty, NUL + '..' segments rejected)."
+                },
+                "continue_on_error": {
+                    "type": "boolean",
+                    "description": "Default true. When false, stop at first per-path failure and return the partial results."
+                },
+            },
+            "required": ["paths"],
         },
     },
     {
@@ -3112,6 +3169,104 @@ def synthetic_inspect_metasound(req_id, args: dict) -> dict:
 # Map of tool-name -> bridge-side synthetic implementation. These are
 # tools that don't have a corresponding UE handler -- the bridge composes
 # existing UE handlers (or implements pure-protocol logic) to serve them.
+def synthetic_bulk_inspect_assets(req_id, args: dict) -> dict:
+    """Bridge-side composition: inspect multiple assets via the existing
+    `inspect_asset` C++ handler, returning a per-path partial-success
+    structure.
+
+    Loops over `paths` and dispatches one `call_ue("inspect_asset", ...)`
+    per entry, collecting result records. Mirrors the partial-failure
+    semantics of `bulk_delete_assets` / `bulk_move_assets`: by default
+    individual failures do not abort the loop, and partial success is
+    surfaced via `ok: False` + non-zero `failed` count.
+
+    Synthetic rather than C++ for the same reasons as the rest of the
+    bulk_* family — the loop is pure protocol-level composition over an
+    existing handler. For pipeline audits ("inspect 500 textures and
+    report which lack a power-of-two source"), one batched MCP call
+    replaces 500 individual round-trips.
+    """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_inspect_assets: invalid_arguments: arguments must be an object",
+        })
+
+    if "paths" not in args:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_inspect_assets: missing_required_field: 'paths' must be supplied as a list of non-empty strings",
+        })
+
+    paths = args.get("paths")
+    if not isinstance(paths, list):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_inspect_assets: invalid_field: 'paths' must be a list of non-empty strings",
+        })
+
+    for i, path in enumerate(paths):
+        if not isinstance(path, str) or not path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_inspect_assets: invalid_path: paths[{i}] must be a non-empty string",
+            })
+        # Same NUL + `..` path-shape guards as the other bulk_* synthetics.
+        if "\x00" in path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_inspect_assets: invalid_path: paths[{i}] contains a NUL byte",
+            })
+        if any(segment == ".." for segment in path.split("/")):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_inspect_assets: invalid_path: paths[{i}] contains a '..' segment",
+            })
+
+    continue_on_error = args.get("continue_on_error", True)
+    if not isinstance(continue_on_error, bool):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_inspect_assets: invalid_field: 'continue_on_error' must be a boolean",
+        })
+
+    results = []
+    inspected = 0
+    failed = 0
+    for path in paths:
+        ue_resp = call_ue("inspect_asset", {"path": path})
+        if "error" in ue_resp:
+            failed += 1
+            err = ue_resp["error"]
+            results.append({
+                "path": path,
+                "ok": False,
+                "data": None,
+                "error_code": err.get("code"),
+                "error_message": err.get("message"),
+            })
+            if not continue_on_error:
+                break
+        else:
+            inspected += 1
+            results.append({
+                "path": path,
+                "ok": True,
+                "data": ue_resp.get("result", {}),
+                "error_code": None,
+                "error_message": None,
+            })
+
+    body = {
+        "ok": failed == 0,
+        "total": len(paths),
+        "inspected": inspected,
+        "failed": failed,
+        "results": results,
+    }
+    return _wrap_tool_result(req_id, body)
+
+
 SYNTHETIC_TOOLS = {
     "wait_for_events": synthetic_wait_for_events,
     "get_camera_transform": synthetic_get_camera_transform,
@@ -3123,6 +3278,7 @@ SYNTHETIC_TOOLS = {
     "bulk_move_assets": synthetic_bulk_move_assets,
     "bulk_rename_assets": synthetic_bulk_rename_assets,
     "bulk_duplicate_assets": synthetic_bulk_duplicate_assets,
+    "bulk_inspect_assets": synthetic_bulk_inspect_assets,
     "inspect_data_asset": synthetic_inspect_data_asset,
     "inspect_sound_class": synthetic_inspect_sound_class,
     "inspect_sound_submix": synthetic_inspect_sound_submix,

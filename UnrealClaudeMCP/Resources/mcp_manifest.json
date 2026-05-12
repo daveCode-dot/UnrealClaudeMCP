@@ -1,7 +1,7 @@
 {
   "name": "UnrealClaudeMCP",
   "version": "0.9.1",
-  "description": "Drive Unreal Engine 5.7 from Claude (or any MCP client) over a local TCP socket. 80 tools total (64 native C++ handlers plus 16 bridge-side synthetic tools) that work with any UE 5.7 project.",
+  "description": "Drive Unreal Engine 5.7 from Claude (or any MCP client) over a local TCP socket. 86 tools total (69 native C++ handlers plus 17 bridge-side synthetic tools) that work with any UE 5.7 project.",
   "transport": {
     "type": "tcp",
     "host": "127.0.0.1",
@@ -14,6 +14,51 @@
       "description": "Run arbitrary unreal.* Python in the editor's embedded interpreter (universal escape hatch). Multi-line scripts work.",
       "params": { "code": "string (required) - Python source code to execute" },
       "returns": { "ok": "bool", "output": "string", "temp_script": "string" }
+    },
+    {
+      "name": "get_engine_version",
+      "description": "Structured engine-version snapshot — major/minor/patch/changelist/branch as separate fields plus a 'minor_dotted' convenience like '5.7'.",
+      "params": {},
+      "returns": "see docs/TOOLS.md"
+    },
+    {
+      "name": "list_levels",
+      "description": "Enumerate every UWorld asset (level) in the project. Optional path_under (default /Game/) + name_contains filter.",
+      "params": {
+        "path_under": "string (optional, default /Game/) - recursive package-path filter; must start with /Game/ or /Engine/",
+        "name_contains": "string (optional) - case-insensitive substring filter on the level asset name"
+      },
+      "returns": "see docs/TOOLS.md"
+    },
+    {
+      "name": "save_dirty_assets",
+      "description": "Persist every in-memory-modified asset + map to disk. Same as editor 'Save All'.",
+      "params": {
+        "include_levels": "bool (optional, default true) - save dirty .umap level packages",
+        "include_content": "bool (optional, default true) - save dirty .uasset content packages"
+      },
+      "returns": "see docs/TOOLS.md"
+    },
+    {
+      "name": "get_selected_actors",
+      "description": "Return name/label/class/transform of every actor currently selected in the editor. Companion to apply_python_to_selection.",
+      "params": {},
+      "returns": "see docs/TOOLS.md"
+    },
+    {
+      "name": "inspect_input_mappings",
+      "description": "Dump the project's legacy UInputSettings (action + axis mappings) plus an Enhanced Input migration-status flag.",
+      "params": {},
+      "returns": "see docs/TOOLS.md"
+    },
+    {
+      "name": "bulk_inspect_assets",
+      "description": "Inspect multiple assets in one MCP call by composing inspect_asset bridge-side. Returns per-path inspection data plus aggregate counts; mirrors the bulk_*_assets family shape.",
+      "params": {
+        "paths": "array of string (required) - asset object paths to inspect",
+        "continue_on_error": "bool (optional, default true) - when false, stop at first failure"
+      },
+      "returns": "see docs/TOOLS.md"
     },
     {
       "name": "get_project_summary",

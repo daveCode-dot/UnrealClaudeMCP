@@ -102,6 +102,12 @@ def test_tool_names_are_unique_and_match_handlers():
         "inspect_audio_bus",
         "inspect_material_function",
         "inspect_metasound",
+        "get_engine_version",
+        "list_levels",
+        "save_dirty_assets",
+        "get_selected_actors",
+        "inspect_input_mappings",
+        "bulk_inspect_assets",
     }
     assert set(names) == expected
 
@@ -130,6 +136,158 @@ def test_inspect_asset_in_tools_catalog():
     assert inspect is not None, "inspect_asset must be in TOOLS catalog"
     assert "path" in inspect["inputSchema"]["properties"]
     assert inspect["inputSchema"]["required"] == ["path"]
+
+
+def test_get_engine_version_in_tools_catalog():
+    """Wave A: get_engine_version is a new C++ handler with no params.
+    Returns structured engine version components separately so callers can
+    branch on (major, minor) without parsing the single 'engine_version'
+    string get_project_summary already emits."""
+    tool = next((t for t in bridge.TOOLS if t["name"] == "get_engine_version"), None)
+    assert tool is not None, "get_engine_version must be in TOOLS catalog"
+    # Mirrors get_project_summary / list_tools shape (no params).
+    assert tool["inputSchema"]["type"] == "object"
+    assert tool["inputSchema"]["properties"] == {}
+    # NOT a synthetic — dispatches straight to the UE C++ handler.
+    assert "get_engine_version" not in bridge.SYNTHETIC_TOOLS
+
+
+def test_list_levels_in_tools_catalog():
+    """Wave A: list_levels is a new C++ handler. Optional path_under +
+    name_contains (no required params). Closes the gap where
+    load_level_by_path required pre-knowledge of the package path."""
+    tool = next((t for t in bridge.TOOLS if t["name"] == "list_levels"), None)
+    assert tool is not None, "list_levels must be in TOOLS catalog"
+    props = tool["inputSchema"]["properties"]
+    assert "path_under" in props
+    assert props["path_under"]["type"] == "string"
+    assert "name_contains" in props
+    assert props["name_contains"]["type"] == "string"
+    # All params optional — no required field.
+    assert "required" not in tool["inputSchema"] or tool["inputSchema"]["required"] == []
+    # NOT a synthetic — dispatches straight to the UE C++ handler.
+    assert "list_levels" not in bridge.SYNTHETIC_TOOLS
+
+
+def test_save_dirty_assets_in_tools_catalog():
+    """Wave A: save_dirty_assets is a new C++ handler closing the
+    persistence loop after every edit. Optional include_levels +
+    include_content (both default true) — mirrors editor 'Save All'."""
+    tool = next((t for t in bridge.TOOLS if t["name"] == "save_dirty_assets"), None)
+    assert tool is not None, "save_dirty_assets must be in TOOLS catalog"
+    props = tool["inputSchema"]["properties"]
+    assert "include_levels" in props
+    assert props["include_levels"]["type"] == "boolean"
+    assert "include_content" in props
+    assert props["include_content"]["type"] == "boolean"
+    # All params optional — no required field.
+    assert "required" not in tool["inputSchema"] or tool["inputSchema"]["required"] == []
+    # NOT a synthetic.
+    assert "save_dirty_assets" not in bridge.SYNTHETIC_TOOLS
+
+
+def test_get_selected_actors_in_tools_catalog():
+    """Wave A: get_selected_actors is a new C++ handler. Companion to
+    apply_python_to_selection — lets the LLM observe what the user has
+    selected before running code against it. No params, no error paths
+    for empty selection (returns count:0)."""
+    tool = next((t for t in bridge.TOOLS if t["name"] == "get_selected_actors"), None)
+    assert tool is not None, "get_selected_actors must be in TOOLS catalog"
+    assert tool["inputSchema"]["type"] == "object"
+    assert tool["inputSchema"]["properties"] == {}
+    assert "get_selected_actors" not in bridge.SYNTHETIC_TOOLS
+
+
+def test_inspect_input_mappings_in_tools_catalog():
+    """Wave A: inspect_input_mappings is a new C++ handler. Returns the
+    project's legacy UInputSettings (action_mappings + axis_mappings) plus
+    a uses_enhanced_input flag. No params, no required field."""
+    tool = next((t for t in bridge.TOOLS if t["name"] == "inspect_input_mappings"), None)
+    assert tool is not None, "inspect_input_mappings must be in TOOLS catalog"
+    assert tool["inputSchema"]["type"] == "object"
+    assert tool["inputSchema"]["properties"] == {}
+    assert "inspect_input_mappings" not in bridge.SYNTHETIC_TOOLS
+
+
+def test_bulk_inspect_assets_is_synthetic():
+    """Wave A: bulk_inspect_assets is a SYNTHETIC bridge-side composition
+    over inspect_asset. Required 'paths' (list of strings); optional
+    continue_on_error (default true). Mirrors bulk_delete_assets shape."""
+    tool = next((t for t in bridge.TOOLS if t["name"] == "bulk_inspect_assets"), None)
+    assert tool is not None, "bulk_inspect_assets must be in TOOLS catalog"
+    assert tool["inputSchema"]["required"] == ["paths"]
+    props = tool["inputSchema"]["properties"]
+    assert props["paths"]["type"] == "array"
+    assert props["paths"]["items"]["type"] == "string"
+    assert "continue_on_error" in props
+    assert props["continue_on_error"]["type"] == "boolean"
+    assert "bulk_inspect_assets" in bridge.SYNTHETIC_TOOLS
+    assert bridge.SYNTHETIC_TOOLS["bulk_inspect_assets"] is bridge.synthetic_bulk_inspect_assets
+
+
+def test_bulk_inspect_assets_happy_path_composes_inspect_asset():
+    """Loop over paths, dispatch one call_ue('inspect_asset', ...) per entry,
+    accumulate per-path results with full inspection data on success."""
+    inspect_responses = [
+        {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "path": "/Game/A", "class": "Texture2D"}},
+        {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "path": "/Game/B", "class": "StaticMesh"}},
+    ]
+    with patch.object(bridge, "call_ue", side_effect=inspect_responses) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 300, "method": "tools/call",
+            "params": {
+                "name": "bulk_inspect_assets",
+                "arguments": {"paths": ["/Game/A", "/Game/B"]},
+            },
+        })
+
+    assert m.call_count == 2
+    assert m.call_args_list[0].args == ("inspect_asset", {"path": "/Game/A"})
+    assert m.call_args_list[1].args == ("inspect_asset", {"path": "/Game/B"})
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is True
+    assert body["total"] == 2
+    assert body["inspected"] == 2
+    assert body["failed"] == 0
+    assert body["results"][0]["data"]["class"] == "Texture2D"
+    assert body["results"][1]["data"]["class"] == "StaticMesh"
+
+
+def test_bulk_inspect_assets_partial_failure_continues_when_continue_on_error_true():
+    """Default partial-failure path. Second inspect fails; loop keeps going,
+    third still attempted. Per-path error_code/error_message preserved."""
+    ok_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "path": "/Game/A", "class": "Texture2D"}}
+    err_resp = {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "inspect_asset: asset_not_found: /Game/Missing"}}
+    ok_resp_2 = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "path": "/Game/C", "class": "Material"}}
+    with patch.object(bridge, "call_ue", side_effect=[ok_resp, err_resp, ok_resp_2]) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 301, "method": "tools/call",
+            "params": {
+                "name": "bulk_inspect_assets",
+                "arguments": {"paths": ["/Game/A", "/Game/Missing", "/Game/C"]},
+            },
+        })
+
+    assert m.call_count == 3
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is False
+    assert body["total"] == 3
+    assert body["inspected"] == 2
+    assert body["failed"] == 1
+    assert body["results"][1]["ok"] is False
+    assert body["results"][1]["error_code"] == -32000
+
+
+def test_bulk_inspect_assets_rejects_missing_paths():
+    """Required 'paths' field absent -> -32602 with the canonical
+    missing_required_field shape."""
+    resp = bridge.handle({
+        "jsonrpc": "2.0", "id": 302, "method": "tools/call",
+        "params": {"name": "bulk_inspect_assets", "arguments": {}},
+    })
+    assert resp["error"]["code"] == -32602
+    assert "bulk_inspect_assets" in resp["error"]["message"]
+    assert "paths" in resp["error"]["message"]
 
 
 def test_move_asset_in_tools_catalog():

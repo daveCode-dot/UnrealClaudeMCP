@@ -25,7 +25,12 @@ DEFINE_LOG_CATEGORY_STATIC(LogUnrealClaudeMCP, Log, All);
 
 // Forward-declared handler factories (one per Handler_*.cpp file in MCP/Handlers/)
 extern TSharedRef<IUCMCPHandler> Make_Handler_ExecutePython();
+extern TSharedRef<IUCMCPHandler> Make_Handler_GetEngineVersion();
 extern TSharedRef<IUCMCPHandler> Make_Handler_GetProjectSummary();
+extern TSharedRef<IUCMCPHandler> Make_Handler_ListLevels();
+extern TSharedRef<IUCMCPHandler> Make_Handler_SaveDirtyAssets();
+extern TSharedRef<IUCMCPHandler> Make_Handler_GetSelectedActors();
+extern TSharedRef<IUCMCPHandler> Make_Handler_InspectInputMappings();
 extern TSharedRef<IUCMCPHandler> Make_Handler_InspectBlueprint();
 extern TSharedRef<IUCMCPHandler> Make_Handler_InspectWidgetTree();
 extern TSharedRef<IUCMCPHandler> Make_Handler_InspectWidgetBlueprint();
@@ -104,7 +109,12 @@ void FUnrealClaudeMCPModule::StartupModule()
 
     FUCMCPHandlerRegistry& Reg = FUCMCPHandlerRegistry::Get();
     Reg.Register(Make_Handler_ExecutePython());
+    Reg.Register(Make_Handler_GetEngineVersion());
     Reg.Register(Make_Handler_GetProjectSummary());
+    Reg.Register(Make_Handler_ListLevels());
+    Reg.Register(Make_Handler_SaveDirtyAssets());
+    Reg.Register(Make_Handler_GetSelectedActors());
+    Reg.Register(Make_Handler_InspectInputMappings());
     Reg.Register(Make_Handler_InspectBlueprint());
     Reg.Register(Make_Handler_InspectWidgetTree());
     Reg.Register(Make_Handler_InspectWidgetBlueprint());
