@@ -1083,14 +1083,17 @@ def recv_framed(sock: socket.socket) -> bytes:
     return recv_exact(sock, length)
 
 
-def write_msg(obj):
+def write_msg(obj: dict) -> None:
     """Write one MCP message to stdout (newline-delimited)."""
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
 
-def make_response(req_id, result=None, error=None):
-    msg = {"jsonrpc": "2.0", "id": req_id}
+def make_response(req_id, result=None, error: dict | None = None) -> dict:
+    """Build a JSON-RPC 2.0 response envelope. `error` (if non-None) wins over
+    `result`. `req_id` is passed through verbatim — JSON-RPC / MCP allow int,
+    str, or null ids and the bridge must not coerce."""
+    msg: dict = {"jsonrpc": "2.0", "id": req_id}
     if error is not None:
         msg["error"] = error
     else:
@@ -1098,7 +1101,7 @@ def make_response(req_id, result=None, error=None):
     return msg
 
 
-def call_ue(method, params):
+def call_ue(method: str, params: dict | None) -> dict:
     """Send one JSON-RPC request to the UE server, return the response dict."""
     try:
         s = socket.socket()
@@ -1128,7 +1131,7 @@ def call_ue(method, params):
         }
 
 
-def _wrap_tool_result(req_id, result_obj):
+def _wrap_tool_result(req_id, result_obj: dict | list | str | int | float | bool | None) -> dict:
     """Wrap a result object as an MCP tools/call response (JSON-stringified into a text block)."""
     return make_response(req_id, {
         "content": [{"type": "text", "text": json.dumps(result_obj, indent=2)}],
@@ -1136,7 +1139,7 @@ def _wrap_tool_result(req_id, result_obj):
     })
 
 
-def _run_marker_pattern(req_id, tool_name, marker_prefix, py_code, context=""):
+def _run_marker_pattern(req_id, tool_name: str, marker_prefix: str, py_code: str, context: str = "") -> dict:
     """Canonical Python-shim pattern for synthetic tools that need to run
     arbitrary `unreal.*` Python in the UE editor and read its JSON output.
 
@@ -1255,7 +1258,7 @@ def _run_marker_pattern(req_id, tool_name, marker_prefix, py_code, context=""):
     })
 
 
-def synthetic_wait_for_events(req_id, args):
+def synthetic_wait_for_events(req_id, args: dict) -> dict:
     """Bridge-side wait_for_events. Polls UE's poll_events handler at
     poll_interval_ms cadence until matching events arrive or timeout_ms
     expires. Lives in the bridge (not UE) because:
@@ -1330,7 +1333,7 @@ def synthetic_wait_for_events(req_id, args):
         time.sleep(poll_interval_s)
 
 
-def synthetic_get_camera_transform(req_id, args):
+def synthetic_get_camera_transform(req_id, args: dict) -> dict:
     """Bridge-side shim: read the level-editor viewport camera transform.
 
     Refactored on 2026-05-12 (deferred bridge-audit #3) to use the shared
@@ -1373,7 +1376,7 @@ def synthetic_get_camera_transform(req_id, args):
     return _run_marker_pattern(req_id, "get_camera_transform", marker_prefix, py_code)
 
 
-def synthetic_set_camera_transform(req_id, args):
+def synthetic_set_camera_transform(req_id, args: dict) -> dict:
     """Bridge-side shim: set the level-editor viewport camera transform.
 
     Partial-update semantics: if the caller omits 'location' (or 'rotation'),
@@ -1522,7 +1525,7 @@ def synthetic_set_camera_transform(req_id, args):
     })
 
 
-def synthetic_screenshot_actor(req_id, args):
+def synthetic_screenshot_actor(req_id, args: dict) -> dict:
     """Bridge-side composition: frame the viewport on an actor, then capture
     a screenshot. Useful for asset-pipeline thumbnail generation and for
     giving the LLM "look at this specific thing" context.
@@ -1596,7 +1599,7 @@ def synthetic_screenshot_actor(req_id, args):
     })
 
 
-def synthetic_compile_mod_pak(req_id, args):
+def synthetic_compile_mod_pak(req_id, args: dict) -> dict:
     """Bridge-side: compile a UE mod plugin to a .pak file via RunUAT BuildMod
     or BuildPlugin, headless. No UE Editor session required.
 
@@ -1806,7 +1809,7 @@ def synthetic_compile_mod_pak(req_id, args):
     })
 
 
-def synthetic_compile_mod_pak_direct(req_id, args):
+def synthetic_compile_mod_pak_direct(req_id, args: dict) -> dict:
     """Bridge-side: compile a .pak directly via UnrealPak.exe with a response
     file, bypassing RunUAT entirely.
 
@@ -1928,7 +1931,7 @@ def synthetic_compile_mod_pak_direct(req_id, args):
     })
 
 
-def synthetic_bulk_delete_assets(req_id, args):
+def synthetic_bulk_delete_assets(req_id, args: dict) -> dict:
     """Bridge-side composition: delete multiple assets via the `delete_asset`
     C++ handler, returning a per-path partial-success structure.
 
@@ -2044,7 +2047,7 @@ def synthetic_bulk_delete_assets(req_id, args):
     })
 
 
-def synthetic_bulk_move_assets(req_id, args):
+def synthetic_bulk_move_assets(req_id, args: dict) -> dict:
     """Bridge-side composition: move multiple assets into a single destination
     folder by dispatching `move_asset` per path.
 
@@ -2170,7 +2173,7 @@ def synthetic_bulk_move_assets(req_id, args):
     })
 
 
-def synthetic_bulk_rename_assets(req_id, args):
+def synthetic_bulk_rename_assets(req_id, args: dict) -> dict:
     """Bridge-side composition: rename multiple assets in one call by
     dispatching `rename_asset` per pair.
 
@@ -2305,7 +2308,7 @@ def synthetic_bulk_rename_assets(req_id, args):
     })
 
 
-def synthetic_bulk_duplicate_assets(req_id, args):
+def synthetic_bulk_duplicate_assets(req_id, args: dict) -> dict:
     """Bridge-side composition: duplicate multiple assets in one call by
     dispatching `duplicate_asset` per pair.
 
@@ -2433,7 +2436,7 @@ def synthetic_bulk_duplicate_assets(req_id, args):
     })
 
 
-def synthetic_inspect_data_asset(req_id, args):
+def synthetic_inspect_data_asset(req_id, args: dict) -> dict:
     """Bridge-side shim: shallow-reflect a UDataAsset by package path.
 
     Canonical Python-shim pattern (per PR #46 + LANGUAGE-CHOICE-RETROSPECTIVE.md
@@ -2526,7 +2529,7 @@ def synthetic_inspect_data_asset(req_id, args):
     return _run_marker_pattern(req_id, "inspect_data_asset", f"__DATA_{marker}__", py_code, context=path)
 
 
-def synthetic_inspect_sound_class(req_id, args):
+def synthetic_inspect_sound_class(req_id, args: dict) -> dict:
     """Bridge-side shim: inspect a USoundClass by package path.
 
     Same canonical marker pattern as `synthetic_inspect_data_asset` (PR #92):
@@ -2654,7 +2657,7 @@ def synthetic_inspect_sound_class(req_id, args):
     return _run_marker_pattern(req_id, "inspect_sound_class", "__SOUNDCLASS_" + marker + "__", py_code, context=path)
 
 
-def synthetic_inspect_sound_submix(req_id, args):
+def synthetic_inspect_sound_submix(req_id, args: dict) -> dict:
     """Bridge-side shim: inspect a USoundSubmix by package path.
 
     Same canonical marker pattern as `synthetic_inspect_sound_class` (PR #98).
@@ -2761,7 +2764,7 @@ def synthetic_inspect_sound_submix(req_id, args):
     return _run_marker_pattern(req_id, "inspect_sound_submix", "__SOUNDSUBMIX_" + marker + "__", py_code, context=path)
 
 
-def synthetic_inspect_audio_bus(req_id, args):
+def synthetic_inspect_audio_bus(req_id, args: dict) -> dict:
     """Bridge-side shim: inspect a UAudioBus by package path.
 
     Same canonical marker pattern as `synthetic_inspect_sound_class`.
@@ -2862,7 +2865,7 @@ def synthetic_inspect_audio_bus(req_id, args):
     return _run_marker_pattern(req_id, "inspect_audio_bus", "__AUDIOBUS_" + marker + "__", py_code, context=path)
 
 
-def synthetic_inspect_material_function(req_id, args):
+def synthetic_inspect_material_function(req_id, args: dict) -> dict:
     """Bridge-side shim: inspect a UMaterialFunction by package path.
 
     Same canonical marker pattern as the rest of the inspect_* family
@@ -3003,7 +3006,7 @@ def synthetic_inspect_material_function(req_id, args):
     return _run_marker_pattern(req_id, "inspect_material_function", "__MATFUNC_" + marker + "__", py_code, context=path)
 
 
-def synthetic_inspect_metasound(req_id, args):
+def synthetic_inspect_metasound(req_id, args: dict) -> dict:
     """Bridge-side shim: inspect a MetaSoundSource or MetaSoundPatch by package path.
 
     Same canonical marker pattern as `synthetic_inspect_sound_class` /
@@ -3129,7 +3132,7 @@ SYNTHETIC_TOOLS = {
 }
 
 
-def handle(req):
+def handle(req: dict) -> dict | None:
     method = req.get("method", "")
     req_id = req.get("id")
     params = req.get("params") or {}
@@ -3172,7 +3175,7 @@ def handle(req):
     return None
 
 
-def main():
+def main() -> None:
     for line in sys.stdin:
         line = line.strip()
         if not line:
