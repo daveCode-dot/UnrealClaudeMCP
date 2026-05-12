@@ -1778,6 +1778,58 @@ def test_inspect_sound_submix_rejects_missing_path():
     assert "inspect_sound_submix" in resp["error"]["message"]
 
 
+def test_inspect_sound_submix_propagates_wrong_asset_type():
+    """When the loaded asset is not a USoundSubmixBase, embedded Python emits a
+    wrong_asset_type logical-error payload with the actual leaf class name. The
+    bridge propagates it verbatim as an ok=False success-envelope (NOT a JSON-RPC
+    error), so callers can branch on error_code without parsing exception text."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    body = {
+        "ok": False,
+        "error_code": "wrong_asset_type",
+        "error_message": "inspect_sound_submix: wrong_asset_type: /Game/Data/DA_NotASubmix",
+        "actual_class": "MyDataAsset",
+    }
+    marker_hex = "abc123def456"
+    log_line = f"__SOUNDSUBMIX_{marker_hex}__{json.dumps(body)}__END__"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [{"category": "LogPython", "message": log_line}]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]), \
+         patch.object(bridge, "uuid", fake_uuid):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 90, "method": "tools/call",
+            "params": {"name": "inspect_sound_submix", "arguments": {"path": "/Game/Data/DA_NotASubmix"}},
+        })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got == body
+
+
+def test_inspect_sound_submix_marker_not_found():
+    """If the LogPython buffer doesn't contain the __SUBMIX_ marker after exec
+    (log overflowed between exec and read, or UE silently dropped log), the
+    bridge returns a marker_not_found logical-error envelope with the
+    'retry typically resolves' hint. Mirrors inspect_data_asset's behaviour
+    for the same failure mode (see test_inspect_data_asset_marker_not_found)."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": "Some other unrelated python log line"}
+    ]}}
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 91, "method": "tools/call",
+            "params": {"name": "inspect_sound_submix", "arguments": {"path": "/Game/Audio/SX_Whatever"}},
+        })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "marker_not_found"
+    assert "retry typically resolves" in got["error_message"]
+
+
 def test_inspect_audio_bus_is_synthetic():
     """inspect_audio_bus is a SYNTHETIC bridge-side handler (PR #99 - Copilot
     retry that recovered from PR #98 regression after the prompt explicitly
@@ -1836,6 +1888,55 @@ def test_inspect_audio_bus_rejects_missing_path():
     })
     assert resp["error"]["code"] == -32602
     assert "inspect_audio_bus" in resp["error"]["message"]
+
+
+def test_inspect_audio_bus_propagates_wrong_asset_type():
+    """When the loaded asset is not a UAudioBus, embedded Python emits a
+    wrong_asset_type logical-error payload that the bridge propagates as an
+    ok=False success envelope. Same pattern as the other inspect_* synthetics."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    body = {
+        "ok": False,
+        "error_code": "wrong_asset_type",
+        "error_message": "inspect_audio_bus: wrong_asset_type: /Game/Data/DA_NotABus",
+        "actual_class": "MyDataAsset",
+    }
+    marker_hex = "abc123def456"
+    log_line = f"__AUDIOBUS_{marker_hex}__{json.dumps(body)}__END__"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [{"category": "LogPython", "message": log_line}]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]), \
+         patch.object(bridge, "uuid", fake_uuid):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 92, "method": "tools/call",
+            "params": {"name": "inspect_audio_bus", "arguments": {"path": "/Game/Data/DA_NotABus"}},
+        })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got == body
+
+
+def test_inspect_audio_bus_marker_not_found():
+    """If the LogPython buffer doesn't contain the __AUDIOBUS_ marker after
+    exec, the bridge returns a marker_not_found logical-error envelope with
+    the canonical 'retry typically resolves' hint."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": "Some other unrelated python log line"}
+    ]}}
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 93, "method": "tools/call",
+            "params": {"name": "inspect_audio_bus", "arguments": {"path": "/Game/Audio/AB_Whatever"}},
+        })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "marker_not_found"
+    assert "retry typically resolves" in got["error_message"]
 
 
 def test_inspect_material_function_is_synthetic():
@@ -1905,6 +2006,86 @@ def test_inspect_material_function_rejects_missing_path():
     })
     assert resp["error"]["code"] == -32602
     assert "inspect_material_function" in resp["error"]["message"]
+
+
+def test_inspect_material_function_propagates_wrong_asset_type():
+    """When the loaded asset is not a UMaterialFunction (or
+    MaterialFunctionMaterialLayer / ...LayerBlend), embedded Python emits
+    a wrong_asset_type logical-error payload that the bridge propagates as
+    an ok=False success envelope."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    body = {
+        "ok": False,
+        "error_code": "wrong_asset_type",
+        "error_message": "inspect_material_function: wrong_asset_type: /Game/Data/DA_NotMF",
+        "actual_class": "MyDataAsset",
+    }
+    marker_hex = "abc123def456"
+    log_line = f"__MATFUNC_{marker_hex}__{json.dumps(body)}__END__"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [{"category": "LogPython", "message": log_line}]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]), \
+         patch.object(bridge, "uuid", fake_uuid):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 94, "method": "tools/call",
+            "params": {"name": "inspect_material_function", "arguments": {"path": "/Game/Data/DA_NotMF"}},
+        })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got == body
+
+
+def test_inspect_material_function_propagates_asset_not_found():
+    """When EditorAssetLibrary.load_asset(path) returns None, embedded Python
+    emits an asset_not_found logical-error envelope; the message follows the
+    post-PR-#126 canonical '<tool>: asset_not_found: <path>' shape."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    body = {
+        "ok": False,
+        "error_code": "asset_not_found",
+        "error_message": "inspect_material_function: asset_not_found: /Game/Materials/MF_Missing",
+    }
+    marker_hex = "0011223344aa"
+    log_line = f"__MATFUNC_{marker_hex}__{json.dumps(body)}__END__"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": log_line}
+    ]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]), \
+         patch.object(bridge, "uuid", fake_uuid):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 95, "method": "tools/call",
+            "params": {"name": "inspect_material_function", "arguments": {"path": "/Game/Materials/MF_Missing"}},
+        })
+
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "asset_not_found"
+    assert got["error_message"].startswith("inspect_material_function: asset_not_found:")
+
+
+def test_inspect_material_function_marker_not_found():
+    """If the LogPython buffer doesn't contain the __MATFUNC_ marker after
+    exec, the bridge returns a marker_not_found logical-error envelope with
+    the canonical 'retry typically resolves' hint."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": "Some other unrelated python log line"}
+    ]}}
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 96, "method": "tools/call",
+            "params": {"name": "inspect_material_function", "arguments": {"path": "/Game/Materials/MF_Whatever"}},
+        })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "marker_not_found"
+    assert "retry typically resolves" in got["error_message"]
 
 
 def test_inspect_metasound_is_synthetic():
@@ -1991,6 +2172,28 @@ def test_inspect_metasound_rejects_missing_path():
     })
     assert resp["error"]["code"] == -32602
     assert "inspect_metasound" in resp["error"]["message"]
+
+
+def test_inspect_metasound_marker_not_found():
+    """If the LogPython buffer doesn't contain the __METASOUND_ marker after
+    exec, the bridge returns a marker_not_found logical-error envelope with
+    the canonical 'retry typically resolves' hint. Closes the last gap in
+    inspect_metasound's error-branch coverage."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": "Some other unrelated python log line"}
+    ]}}
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 97, "method": "tools/call",
+            "params": {"name": "inspect_metasound", "arguments": {"path": "/Game/Audio/MS_Whatever"}},
+        })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "marker_not_found"
+    assert "retry typically resolves" in got["error_message"]
 
 
 def test_screenshot_actor_happy_path():
