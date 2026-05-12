@@ -1273,6 +1273,12 @@ def synthetic_wait_for_events(req_id, args):
     [25, 1000] (faster than 25ms is wasteful given network round-trip
     overhead; slower than 1s defeats the purpose of long-poll).
     """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "wait_for_events: invalid_arguments: arguments must be an object",
+        })
+
     # --- Validate + clamp params ---
     def _coerce_int(name, default, lo, hi):
         v = args.get(name, default)
@@ -1347,6 +1353,12 @@ def synthetic_get_camera_transform(req_id, args):
     transport errors and would have silently snapped the camera to (0,0,0)
     if a `marker_not_found` envelope was returned from get.
     """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "get_camera_transform: invalid_arguments: arguments must be an object",
+        })
+
     marker_prefix = f"__CAM_{uuid.uuid4().hex[:12]}__"
     py_code = (
         "import unreal, json\n"
@@ -1375,6 +1387,12 @@ def synthetic_set_camera_transform(req_id, args):
     the full set call. This is a second-order cost of going synthetic --
     in C++ we'd have direct access to UnrealEditorSubsystem's current state.
     """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "set_camera_transform: invalid_arguments: arguments must be an object",
+        })
+
     location = args.get("location")
     rotation = args.get("rotation")
 
@@ -1526,6 +1544,12 @@ def synthetic_screenshot_actor(req_id, args):
     handler doing both ops in one game-thread call would race the
     camera move against the readback.
     """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "screenshot_actor: invalid_arguments: arguments must be an object",
+        })
+
     name = args.get("name")
     if not isinstance(name, str) or not name:
         return make_response(req_id, error={
@@ -1604,6 +1628,12 @@ def synthetic_compile_mod_pak(req_id, args):
     Dev Kits in 'installed-build mode' that block BuildPlugin (e.g. Conan
     Exiles Enhanced) — falling back to BuildMod cleanly.
     """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "compile_mod_pak: invalid_arguments: arguments must be an object",
+        })
+
     import os
     import shutil
     import subprocess
@@ -1809,6 +1839,12 @@ def synthetic_compile_mod_pak_direct(req_id, args):
     Same shape as compile_mod_pak (BuildMod branch) so downstream tooling
     can switch between the two transparently.
     """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "compile_mod_pak_direct: invalid_arguments: arguments must be an object",
+        })
+
     import os
     import subprocess
     import time
