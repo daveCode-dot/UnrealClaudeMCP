@@ -23,6 +23,7 @@ UE 5.7 plugin + Python bridge exposing editor automation to MCP-compliant client
 - **Verify UE API claims against UE 5.7 source** before committing C++. Past reviewer agents have asserted UE APIs that turned out wrong.
 - **Vendor-neutral framing** in any user-facing copy — repo description, `.uplugin` Description, README, tool descriptions. Don't bake "Claude Code" specifically into anything that ships.
 - **Smoke test runs against a live UE editor** (`examples/smoke_test.py` hits `127.0.0.1:18888` directly). Bridge unit tests under `tests/` run without UE.
+- **Live UE launches are pre-authorized by default in any session.** The maintainer granted standing permission on 2026-05-12: "we always use Unreal for testing if you want." Launch UE 5.7 against the host project at `F:/ax plug in/HDMediaVirtualStudio/HDMediaVirtualStudio.uproject` whenever live verification is the next step. **Path-quoting recipe (critical):** `Start-Process 'F:\UE_5.7\Engine\Binaries\Win64\UnrealEditor.exe' -ArgumentList '"F:\ax plug in\HDMediaVirtualStudio\HDMediaVirtualStudio.uproject"'` — pre-quote the path inside the array element so PowerShell doesn't tokenize on whitespace. Without that, UE falls back to Project Browser and the bridge port never binds.
 - **Push to feature branches, never directly to `main`.** Open a PR; merge after CI green.
 - **Cold-compile-before-merge for C++ changes.** Bridge-only Python/doc changes can self-merge on CI green per directive #7 (recorded in HANDOFF).
 
