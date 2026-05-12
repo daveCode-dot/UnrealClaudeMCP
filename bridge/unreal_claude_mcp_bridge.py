@@ -168,6 +168,33 @@ TOOLS = [
         },
     },
     {
+        "name": "bulk_duplicate_assets",
+        "description": "Duplicate multiple assets in one call by composing the duplicate_asset C++ handler bridge-side. Schema mirrors bulk_rename_assets's per-entry mapping but uses `dest_path` (full destination path) instead of `new_name` (leaf name) since duplicate_asset takes a full destination, not a folder + name split. Unlike rename/move, duplicate does NOT leave a redirector at the source -- the source is preserved at its current path and a new copy is created at `dest_path`. Returns per-entry results plus aggregate counts. SYNTHETIC bridge-side handler.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "duplicates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Source asset package path."},
+                            "dest_path": {"type": "string", "description": "Destination asset package path (must not exist)."},
+                        },
+                        "required": ["path", "dest_path"],
+                    },
+                    "description": "List of {path, dest_path} pairs to duplicate. Both path and dest_path must be non-empty strings with no NUL byte and no '..' segment.",
+                },
+                "continue_on_error": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "When true (default), keep duplicating after an individual entry fails and surface per-entry errors in results; when false, stop after the first failure and return partial results.",
+                },
+            },
+            "required": ["duplicates"],
+        },
+    },
+    {
         "name": "bulk_rename_assets",
         "description": "Rename multiple assets in one call by composing the rename_asset C++ handler bridge-side. Each rename leaves a redirector at the source per UE's standard semantics. Schema differs from bulk_delete_assets / bulk_move_assets: takes a `renames` list of {path, new_name} objects so each asset gets a per-entry leaf name. Returns per-entry results plus aggregate counts. Mirrors the bulk_*_assets result-shape convention. SYNTHETIC bridge-side handler.",
         "inputSchema": {
@@ -2239,6 +2266,134 @@ def synthetic_bulk_rename_assets(req_id, args):
     })
 
 
+def synthetic_bulk_duplicate_assets(req_id, args):
+    """Bridge-side composition: duplicate multiple assets in one call by
+    dispatching `duplicate_asset` per pair.
+
+    Fourth member of the bulk_*_assets family (after delete + move +
+    rename). Schema mirrors bulk_rename's per-entry mapping shape but
+    with `dest_path` (full destination path) instead of `new_name`
+    (leaf name only), because `duplicate_asset` takes a full destination
+    path -- not a folder + name split.
+
+    Unlike rename/move, duplicate does NOT leave a redirector at the
+    source -- the source asset is preserved AT its current path and a
+    new copy is created at `dest_path`. Callers can reference both the
+    original and the duplicate after this call.
+
+    Validation reuses PR #115's defensive shape-checks on BOTH path
+    AND dest_path (NUL byte + `..` segment rejected). dest_path gets
+    the same checks as path because it's a full asset path, not a leaf
+    name like bulk_rename's new_name.
+    """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_duplicate_assets: invalid_arguments: arguments must be an object",
+        })
+
+    if "duplicates" not in args:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_duplicate_assets: missing_required_field: 'duplicates' must be supplied as a list of {path, dest_path} objects",
+        })
+
+    duplicates = args.get("duplicates")
+    if not isinstance(duplicates, list):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_duplicate_assets: invalid_field: 'duplicates' must be a list of {path, dest_path} objects",
+        })
+
+    for i, entry in enumerate(duplicates):
+        if not isinstance(entry, dict):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_duplicate_assets: invalid_entry: duplicates[{i}] must be an object with 'path' and 'dest_path'",
+            })
+        path = entry.get("path")
+        dest_path = entry.get("dest_path")
+        # Validate source path.
+        if not isinstance(path, str) or not path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_duplicate_assets: invalid_path: duplicates[{i}].path must be a non-empty string",
+            })
+        if "\x00" in path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_duplicate_assets: invalid_path: duplicates[{i}].path contains a NUL byte",
+            })
+        if any(segment == ".." for segment in path.split("/")):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_duplicate_assets: invalid_path: duplicates[{i}].path contains a '..' segment",
+            })
+        # Validate destination path (same rules: it's a full asset path).
+        if not isinstance(dest_path, str) or not dest_path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_duplicate_assets: invalid_dest_path: duplicates[{i}].dest_path must be a non-empty string",
+            })
+        if "\x00" in dest_path:
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_duplicate_assets: invalid_dest_path: duplicates[{i}].dest_path contains a NUL byte",
+            })
+        if any(segment == ".." for segment in dest_path.split("/")):
+            return make_response(req_id, error={
+                "code": -32602,
+                "message": f"bulk_duplicate_assets: invalid_dest_path: duplicates[{i}].dest_path contains a '..' segment",
+            })
+
+    continue_on_error = args.get("continue_on_error", True)
+    if not isinstance(continue_on_error, bool):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "bulk_duplicate_assets: invalid_field: 'continue_on_error' must be a boolean",
+        })
+
+    results = []
+    for entry in duplicates:
+        path = entry["path"]
+        dest_path = entry["dest_path"]
+        dup_resp = call_ue("duplicate_asset", {"path": path, "dest_path": dest_path})
+        if "error" in dup_resp:
+            upstream_err = dup_resp.get("error", {}) or {}
+            error_code = upstream_err.get("code", -32603)
+            if error_code is None:
+                error_code = -32603
+            results.append({
+                "path": path,
+                "dest_path": dest_path,
+                "ok": False,
+                "error_code": error_code,
+                "error_message": upstream_err.get("message") or "",
+            })
+            if not continue_on_error:
+                break
+            continue
+
+        results.append({
+            "path": path,
+            "dest_path": dest_path,
+            "ok": True,
+            "error_code": None,
+            "error_message": None,
+        })
+
+    duplicated = sum(1 for result in results if result["ok"])
+    failed = sum(1 for result in results if not result["ok"])
+
+    return _wrap_tool_result(req_id, {
+        "ok": failed == 0,
+        "total": len(duplicates),
+        "duplicated": duplicated,
+        "failed": failed,
+        "results": results,
+    })
+
+
 def synthetic_inspect_data_asset(req_id, args):
     """Bridge-side shim: shallow-reflect a UDataAsset by package path.
 
@@ -2925,6 +3080,7 @@ SYNTHETIC_TOOLS = {
     "bulk_delete_assets": synthetic_bulk_delete_assets,
     "bulk_move_assets": synthetic_bulk_move_assets,
     "bulk_rename_assets": synthetic_bulk_rename_assets,
+    "bulk_duplicate_assets": synthetic_bulk_duplicate_assets,
     "inspect_data_asset": synthetic_inspect_data_asset,
     "inspect_sound_class": synthetic_inspect_sound_class,
     "inspect_sound_submix": synthetic_inspect_sound_submix,

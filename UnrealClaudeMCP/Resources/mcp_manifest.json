@@ -668,6 +668,15 @@
       "returns": { "ok": "bool", "path": "string", "class": "string (leaf class name)", "package_path": "string (from obj.get_path_name())", "description": "string (asset description; empty when not set)", "exposed_to_library": "bool (whether the function appears in the material-function library)", "library_categories": "array of string (Text values stringified)", "inputs": "array of {name: string, type: string (always 'FunctionInput'), input_type: string (enum stringified)} - one entry per MaterialExpressionFunctionInput discovered in function_expressions", "outputs": "array of {name: string, type: string (always 'FunctionOutput')} - one entry per MaterialExpressionFunctionOutput", "additional_properties": "array of {name: string, type: string, value: string} - excludes the curated names", "error_code": "string (only on ok=False; one of 'asset_not_found', 'wrong_asset_type', 'marker_not_found', 'invalid_json')", "error_message": "string (only on ok=False)", "actual_class": "string (only on wrong_asset_type)" }
     },
     {
+      "name": "bulk_duplicate_assets",
+      "description": "Duplicate multiple assets by composing the duplicate_asset C++ handler bridge-side. Takes a `duplicates` list of {path, dest_path} pairs (each asset gets a per-entry full destination path). Unlike rename/move, duplicate does NOT leave a redirector at the source -- the source is preserved and a new copy is created at dest_path. Returns per-entry results plus aggregate counts. SYNTHETIC bridge-side handler -- fourth member of the bulk_*_assets family.",
+      "params": {
+        "duplicates": "array of {path: string, dest_path: string} (required) - per-entry duplicate pairs; both path and dest_path must be non-empty strings with no NUL byte and no '..' segment",
+        "continue_on_error": "bool (optional, default true) - when true, keep duplicating after an individual entry fails and surface per-entry errors in results; when false, stop on first failure and return partial results"
+      },
+      "returns": { "ok": "bool (true only when failed == 0)", "total": "int (duplicates.length)", "duplicated": "int (count of per-entry successes)", "failed": "int (count of per-entry failures)", "results": "array of {path: string, dest_path: string, ok: bool, error_code: int | null, error_message: string | null} - one entry per attempted duplicate; preserves the upstream JSON-RPC error code per failure" }
+    },
+    {
       "name": "bulk_rename_assets",
       "description": "Rename multiple assets by composing the rename_asset C++ handler bridge-side. Takes a `renames` list of {path, new_name} pairs (each asset gets a per-entry new leaf name; the folder is unchanged). Each successful rename leaves a redirector at the source per UE's standard semantics. Returns per-entry results plus aggregate counts. SYNTHETIC bridge-side handler -- third member of the bulk_*_assets family after delete + move.",
       "params": {
