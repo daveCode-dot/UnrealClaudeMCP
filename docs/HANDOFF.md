@@ -1029,3 +1029,67 @@ Plus David's #102 and #105 closed with full credit + co-authorship preserved on 
 - **External-contributor cherry-pick playbook is now battle-tested.** Future incoming PRs (David's or others') that go stale during in-flight main work can land via the same pattern: `git merge-tree` dry-run → cherry-pick onto fresh branch → re-write any count-bump commit → preserve authorship via `Co-Authored-By` → respectful "superseded by" comment on the original → close. ~30 minutes per PR end-to-end.
 - **All session-2026-05-12 deferred bridge-audit findings still pending.** Specifically: `get_camera_transform` marker-helper refactor, `_run_marker_pattern` exception-class split, `compile_mod_pak` vs `screenshot_actor` upstream-error-code alignment. All require an attended session because they touch tested envelope shapes.
 - **Eleventh consecutive closing-note.** Three appended in the same calendar day for the same project. The cadence is no longer load-bearing — it's the project's documentation rhythm. Morning-pickup is mechanical from this closing-note + the top-of-file at-a-glance.
+
+**Session 2026-05-12 (morning attended window — live UE validation + LIVE-FOUND bug fixes):**
+
+User woke up, granted standing UE-launch permission ("we always use Unreal for testing if you want"), and authorized a generous PR budget. The morning produced the first end-to-end live MCP round-trip in this session lineage AND surfaced two live-only bugs that no unit test had caught.
+
+**What shipped (4 PRs):**
+
+- **PR #125** — `docs: memorialize standing UE-launch authorization + path-quoting recipe`. Lifted the path-quoting recipe (PR #124's fix) out of the closing-note and into the always-read house-rule blocks of CLAUDE.md + AGENTS.md. Future agents now read it BEFORE attempting to launch UE, instead of after a 10-minute hang.
+
+- **PR #126** — `fix(bridge): align inspect_* asset_not_found error message shape`. **LIVE-FOUND BUG.** Calling each of the five `inspect_*` synthetics against `/Game/NoSuch*` paths returned three different message shapes: two bare (`'Asset not found: <path>'`), three double-labelled (`'<tool>: asset_not_found: Asset not found: <path>'`). Per-tool pytest happy-paths mocked whichever shape they expected to receive, so cross-tool drift stayed invisible. Canonical now: `'<tool>: asset_not_found: <path>'`. Added a guard test (`test_synthetic_inspect_asset_not_found_messages_use_canonical_prefix`) that reads bridge.py source at test time and asserts no `synthetic_inspect_*` function regresses to the bare or redundant forms.
+
+- **PR #127** — `fix(bridge): set_camera_transform Rotator argument order`. **CRITICAL LIVE-FOUND BUG.** UE 5.7 Python's `unreal.Rotator(a, b, c)` constructor takes args POSITIONALLY in struct-memory order: `(roll, pitch, yaw)`, NOT the named-property order `(pitch, yaw, roll)` that the docstring suggests. Live probe in the editor: `unreal.Rotator(1, 2, 3)` → `pitch=2 yaw=3 roll=1`. `synthetic_set_camera_transform` had been emitting `unreal.Rotator({rp}, {ry}, {rr})` positionally, which silently scrambled rotation: a caller setting pitch=-20/yaw=45/roll=0 then reading the camera back saw pitch=45/yaw=0/roll=-20. Fix: construct the Rotator empty and assign by named property — invariant to UE's constructor convention. Regression test captures the py_code that the synthetic sends and asserts both the property-set form is present AND the positional `unreal.Rotator(<num>,<num>,<num>)` form is absent (the forbidden regex is built at runtime so the test file's own source is invisible to grep-based history rewriters).
+
+- **PR #128** — `fix(bridge): split _run_marker_pattern ValueError vs JSONDecodeError`. The shared marker-pattern helper had been catching `(ValueError, json.JSONDecodeError)` in one except clause and always returning `error_code='invalid_json'`. Two different failure modes were conflated: `msg.index(end_token, start)` raising ValueError (line truncated, retryable) vs `json.loads(payload)` raising JSONDecodeError (payload malformed, not retryable). Split into two distinct try blocks; new error_code `'marker_truncated'` for the first case, `'invalid_json'` preserved for the second. Two regression tests cover both branches.
+
+**Live MCP validation log (first time end-to-end this session lineage):**
+
+- `list_tools` → 64 C++ handlers registered. Plugin loaded.
+- `get_project_summary` → "HDMedia Virtual Studio" / UE 5.7.4-51494982+++UE5+Release-5.7 / `UnrealClaudeMCP v0.9.1` enabled.
+- `get_actors_in_level` → 144 actors (WorldPartition + landscape proxies + HLODs).
+- `execute_unreal_python` → `ok: true`, log emitted.
+- `get_viewport_screenshot` → 2035×1168 PNG, 2.84MB raw, 3.79MB base64, single round-trip — **v0.9.1 large-frame state machine validated end-to-end**.
+- `get_camera_transform` → live viewport state read.
+- `wait_for_events` → 100 events drained, `next_seq=7799`, `dropped=false`.
+- 5× `inspect_*` against /Game/NoSuch* → logical-error envelopes returned (surfaced the message-shape inconsistency that became PR #126).
+- `set_camera_transform` + follow-up `get_camera_transform` → surfaced the Rotator arg-order scramble that became PR #127.
+
+**New trap-table entries from this session:**
+
+- **Live MCP testing finds bugs unit tests can't.** Both PRs #126 and #127 fixed live-only defects. Per-tool unit tests mock the round-trip with whatever shape they expect to receive, so cross-tool convention drift (#126) and embedded-Python-side wrapper conventions (#127) are invisible inside the test boundary. Any future PR that touches the bridge → UE Python surface should run live MCP round-trips against the synthetic before merge.
+- **UE 5.7 Python `unreal.Rotator(a, b, c)` takes `(roll, pitch, yaw)` positionally** — struct-memory order, NOT property-name order. Construct empty + assign by property name (`r = unreal.Rotator(); r.pitch = ...; r.yaw = ...; r.roll = ...`) to sidestep the trap. Same gotcha may apply to other `unreal.*` struct constructors — audit before assuming positional args follow the docstring property order.
+- **MCP server bridge code changes do NOT take effect mid-session.** The bridge MCP server process loads `bridge/unreal_claude_mcp_bridge.py` at session startup and caches the module. Edits to bridge.py after that point — including merged PRs — are NOT reflected in live MCP calls until Claude Code restarts. Three of this morning's four PRs (#126, #127, #128) touched bridge.py and are NOT live-verifiable from THIS session; verification happens automatically on the next session start.
+- **JSON-RPC transport strips embedded NUL bytes in path arguments.** A live test of PR #115's `bulk_delete_assets` NUL-rejection guard sent `'/Game/NonExistent Sneaky'`. The bridge received `'/Game/NonExistent'` — the NUL was stripped during JSON serialisation between the agent and the MCP server. So PR #115's NUL-rejection is unreachable via the canonical MCP transport. The `..`-segment rejection is similarly unverifiable this session due to the MCP-cache-staleness above, but is reachable through the transport (no NUL stripping for that). Worth a follow-up trap-table entry on the limits of MCP-layer input fuzzing.
+- **Bridge-audit fix #2 (compile_mod_pak vs screenshot_actor error-code preservation) was a category-error finding.** `compile_mod_pak` uses `subprocess.run`, not `call_ue`, so there's no upstream error code to preserve. `screenshot_actor`'s upstream preservation pattern only applies when `call_ue` is the failure source. Skipped from the deferred-bridge-audit-findings list; not a real defect.
+
+**Cumulative session 2026-05-12 totals (all four windows combined):**
+
+| PR | Title | Window | Class |
+|---|---|---|---|
+| #110-#114 | drift fix, CI speedup, drift_sweep, closing, scanner hardening | attended #1 | foundation |
+| #115-#117 | bulk_delete hardening, scanner version detection, closing | autonomous #1 | foundation |
+| #118-#119 | smoke_test count, step() exception broadening | autonomous #2 | hardening |
+| #120-#122 | David's #102/#105 cherry-picks, closing | autonomous #3 | external integration |
+| #123-#124 | UE blocker hypotheses + path-quoting fix | autonomous #4 | live-UE setup |
+| #125 | standing UE-auth + path-quoting recipe in house rules | morning attended | house rules |
+| #126 | inspect_* error message alignment | morning attended | LIVE-FOUND bug |
+| #127 | set_camera_transform Rotator arg order | morning attended | CRITICAL LIVE-FOUND bug |
+| #128 | _run_marker_pattern exception class split | morning attended | hardening |
+
+19 PRs in <24h calendar-time. Of those, two were LIVE-FOUND bugs (#126, #127) — the kind that needed an actual UE editor to surface and that no amount of pytest mocking would have caught.
+
+**Tool / test totals at end of this window:**
+- 76 tools (64 C++ handlers + 12 bridge-side synthetic tools).
+- pytest: 215 → 218 passing (+1 from #126's guard test, +1 from #127's regression test, +2 from #128's split-coverage tests, -1 from #126's existing test-message update which is a wash).
+- main HEAD: `ee444a8` end of PR #128 merge; this closing-note PR adds one more merge on top.
+- Drift sweep: 6 signals × 8 files, clean.
+- Live MCP channel: still up against the running editor at the moment this commit lands. Will close cleanly when the user shuts down UE.
+
+**What to watch in next session:**
+
+- **MCP-cache-staleness means PRs #126, #127, #128 are NOT live-verified from this session.** First action on next session start: re-run the canonical live test panel against the loaded host project to confirm each fix lands correctly. Specifically: `set_camera_transform({location: ..., rotation: {pitch: -20, yaw: 45, roll: 7}})` then `get_camera_transform()` — expect the values to round-trip cleanly post-#127. And: `inspect_data_asset({path: '/Game/NoSuch'})` then check error_message starts with `'inspect_data_asset: asset_not_found:'` post-#126.
+- **`get_camera_transform` helper refactor (deferred bridge-audit #3)** still pending. The change is risky because `synthetic_set_camera_transform` calls into `synthetic_get_camera_transform`'s envelope shape directly (line ~1329-1336 in bridge.py); any refactor must touch both in lockstep. Out of scope for an autonomous unattended window; attended-only.
+- **The drift_sweep + live-MCP combination is the project's new quality stack.** Drift sweep catches doc/count regression deterministically; live MCP catches embedded-Python and cross-tool convention drift. Both should run on any bridge.py touching PR before merge.
+- **Twelfth consecutive closing-note.** Four windows in 24h. The cadence is no longer cadence — it's documentation rhythm at the molecular level. Next session's pickup is the latest "what to watch" bullet list.
