@@ -476,6 +476,127 @@ def test_get_camera_transform_is_synthetic():
     assert bridge.SYNTHETIC_TOOLS["get_camera_transform"] is bridge.synthetic_get_camera_transform
 
 
+def test_get_camera_transform_happy_path_omits_ok_true_wrapper():
+    """Post-refactor (2026-05-12 deferred bridge-audit #3): get_camera_transform
+    delegates to `_run_marker_pattern`, which returns the parsed JSON
+    payload DIRECTLY as the success envelope. The hand-rolled form used to
+    wrap the payload in `{ok: True, **data}` -- this test pins that the
+    `ok: True` key is intentionally GONE so a future refactor doesn't
+    accidentally reintroduce it (which would silently expand the envelope
+    surface back to where it was)."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    body = {
+        "location": {"x": 100.0, "y": 200.0, "z": 300.0},
+        "rotation": {"pitch": -15.0, "yaw": 90.0, "roll": 0.0},
+    }
+    marker_hex = "abcdef012345"
+    log_line = f"__CAM_{marker_hex}__{json.dumps(body)}__END__"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": log_line}
+    ]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        with patch.object(bridge, "uuid", fake_uuid):
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 60, "method": "tools/call",
+                "params": {"name": "get_camera_transform", "arguments": {}},
+            })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    # Post-refactor: location and rotation are present, no `ok: True` wrapper.
+    assert got["location"] == {"x": 100.0, "y": 200.0, "z": 300.0}
+    assert got["rotation"] == {"pitch": -15.0, "yaw": 90.0, "roll": 0.0}
+    assert "ok" not in got, (
+        "post-refactor envelope must NOT include `ok: True` -- the helper "
+        "returns the parsed JSON payload directly, no wrapper."
+    )
+
+
+def test_get_camera_transform_marker_not_found_returns_logical_error_envelope():
+    """Post-refactor: marker_not_found is now a logical-error envelope (the
+    helper's standard shape) -- NOT a JSON-RPC `-32603` transport error like
+    the hand-rolled form used to return. Callers that retry on transport
+    errors only would otherwise miss the retry-friendly logical-error.
+    """
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": "unrelated log line, no marker"}
+    ]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex="deadbeefcaf1")
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        with patch.object(bridge, "uuid", fake_uuid):
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 61, "method": "tools/call",
+                "params": {"name": "get_camera_transform", "arguments": {}},
+            })
+
+    # Logical errors come back as success envelopes (isError=False) with
+    # ok:False + error_code inside the inner payload.
+    assert "error" not in resp, (
+        f"marker_not_found must NOT be a JSON-RPC transport error post-refactor; "
+        f"got envelope={resp}"
+    )
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "marker_not_found"
+
+
+def test_set_camera_transform_rejects_partial_update_when_get_returns_logical_error():
+    """If a partial-update call needs to read the current camera state but
+    get_camera_transform returns a logical-error envelope (e.g.
+    marker_not_found from a flooded LogPython ring), set_camera_transform
+    MUST refuse cleanly with -32603 rather than silently snap the omitted
+    side to (0, 0, 0).
+
+    This is the second-order failure that the pre-refactor set code didn't
+    handle: it checked only for JSON-RPC transport errors. Post-refactor of
+    get_camera_transform, marker_not_found is no longer a transport error --
+    it's a logical-error envelope -- and the set code now has an explicit
+    layer 3 check to catch it.
+
+    Without this guard, a caller running partial-update during a busy
+    LogPython burst could see their omitted side silently zero out. This
+    test pins the explicit refusal."""
+    # First call_ue: get_camera_transform's inner execute_unreal_python.
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    # Second call_ue: get_camera_transform's inner get_log_lines. No marker
+    # -> _run_marker_pattern returns marker_not_found logical-error envelope.
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": "no marker here, simulated buffer overflow"}
+    ]}}
+    # set_camera_transform invokes get_camera_transform, so we feed two
+    # responses to call_ue in order.
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex="cafebabe1234")
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        with patch.object(bridge, "uuid", fake_uuid):
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 62, "method": "tools/call",
+                "params": {
+                    "name": "set_camera_transform",
+                    # Partial update: location supplied, rotation omitted.
+                    # Forces set to read current rotation -> hits the
+                    # marker_not_found path on get.
+                    "arguments": {"location": {"x": 1, "y": 2, "z": 3}},
+                },
+            })
+
+    assert "error" in resp, (
+        "set_camera_transform must refuse a partial update when get returns "
+        "a logical-error envelope -- silent (0,0,0) fallback is a regression."
+    )
+    assert resp["error"]["code"] == -32603
+    msg = resp["error"]["message"]
+    assert "marker_not_found" in msg, (
+        f"refusal message must surface the upstream error_code so a caller "
+        f"can triage; got: {msg!r}"
+    )
+
+
 def test_set_camera_transform_is_synthetic():
     """v0.12.0 (language-shim experiment, PR #46): set_camera_transform
     is a SYNTHETIC bridge-side handler with optional location + rotation."""
