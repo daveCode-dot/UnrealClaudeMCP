@@ -1176,3 +1176,24 @@ Plus a fourth bonus PR addressing a non-defect Copilot finding that I had previo
   - Live MCP round-trip against a bound UE editor for any synthetic that calls into embedded Python or composes other tools
 - **PR budget for today consumed: ~22 / 50.** Generous runway remains. Per the standing budget, future autonomous windows can ship aggressively when leverage is clear.
 - **Thirteenth consecutive closing-note. Five windows in <26h.** The cadence is the documentation. Next session pickup is mechanical from the "what to watch" bullet list above.
+
+**Session 2026-05-12 (morning autopilot continuation — first new tool of session lineage):**
+
+User extended permission again ("Go autopilot for everything"). One concrete new tool shipped before the next closing-note PR; a second one is queued.
+
+**Shipped (PR #133):** `bulk_move_assets` synthetic. First NEW tool surface added entirely in this session lineage (all prior 23 PRs were fixes, hardening, refactors, scanner extensions, or cherry-picks). Mirrors `bulk_delete_assets`'s schema + result shape so client code can switch between the two with a one-tool-name change. Closes the "bulk delete/move" deferred-handler pair from the original HANDOFF roadmap (`bulk_delete_assets` shipped PR #90, this PR closes the move half). Schema requires `paths` + `dest_folder`; reuses PR #115's defensive shape-checks (NUL byte + `..` segment rejection on both paths AND dest_folder). Seven new tests (schema + happy path + partial-failure-stops-on-continue_on_error=false + missing paths + missing dest_folder + NUL in path + `..` in dest_folder).
+
+**Tool / test totals at PR #133 merge:**
+- 77 tools (64 C++ + 13 bridge-side synthetic) — up from 76.
+- pytest: 221 → 228 (+7 bulk_move tests).
+- main HEAD: `7fe3ac6` end of PR #133 merge; this closing-note PR adds one more merge on top.
+- Drift sweep: 6 signals × 8 files, clean.
+
+**Twin-synthetic pattern now established for any future `bulk_*` tool**: copy the validator scaffold, swap the inner `call_ue` method + result count name, add whatever destination/parameter the target handler requires. The validation surface (paths list + NUL + `..` rejection) is now reusable, not just for delete and move.
+
+**What to watch in next session:**
+
+- **`inspect_metasound` is the next obvious synthetic.** Live probe in this window confirmed `unreal.MetaSoundSource` and `unreal.MetaSoundPatch` both exist in UE 5.7 with the Metasound plugin enabled (which is enabled-by-default per `get_project_summary` plugin list). Pattern would mirror `inspect_sound_class` / `inspect_sound_submix`: marker-pattern Python shim, `asset_not_found` / `wrong_asset_type` / `marker_not_found` / `invalid_json` logical errors, reflect class + package_path + any editable properties.
+- **`bulk_rename_assets` rounds out the `bulk_*` family.** Twin to `bulk_move_assets`, takes a `{path → new_name}` mapping. Same validator scaffold applies; only the call_ue per-item shape changes.
+- **MCP-cache-staleness now affects 4 PRs from this morning** (#126, #127, #128, #130) PLUS PR #133. First action on next session start: restart Claude Code, then live-verify each via the canonical test panel.
+- **Fourteenth consecutive closing-note.** Cadence intact. Next session pickup is mechanical from this entry's "what to watch" list.
