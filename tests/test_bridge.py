@@ -95,6 +95,7 @@ def test_tool_names_are_unique_and_match_handlers():
         "bulk_delete_assets",
         "bulk_move_assets",
         "bulk_rename_assets",
+        "bulk_duplicate_assets",
         "inspect_data_asset",
         "inspect_sound_class",
         "inspect_sound_submix",
@@ -1310,6 +1311,121 @@ def test_bulk_rename_assets_rejects_path_with_nul_byte():
     assert resp["error"]["code"] == -32602
     assert "renames[1].path" in resp["error"]["message"]
     assert "NUL" in resp["error"]["message"]
+
+
+def test_bulk_duplicate_assets_is_synthetic():
+    """bulk_duplicate_assets is the fourth bulk_*_assets twin. Schema mirrors
+    bulk_rename's per-entry mapping but with `dest_path` (full destination)
+    instead of `new_name` (leaf name), since duplicate_asset takes a full
+    destination path -- not a folder + name split."""
+    t = next((t for t in bridge.TOOLS if t["name"] == "bulk_duplicate_assets"), None)
+    assert t is not None
+    assert t["inputSchema"]["required"] == ["duplicates"]
+    assert t["inputSchema"]["properties"]["duplicates"]["type"] == "array"
+    item_schema = t["inputSchema"]["properties"]["duplicates"]["items"]
+    assert item_schema["type"] == "object"
+    assert set(item_schema["required"]) == {"path", "dest_path"}
+    assert "bulk_duplicate_assets" in bridge.SYNTHETIC_TOOLS
+    assert bridge.SYNTHETIC_TOOLS["bulk_duplicate_assets"] is bridge.synthetic_bulk_duplicate_assets
+
+
+def test_bulk_duplicate_assets_happy_path():
+    """All duplicates succeed -> ok=True, duplicated == total, per-entry
+    results include both path AND dest_path so the caller can build a
+    source→duplicate mapping from the response envelope alone."""
+    with patch.object(bridge, "call_ue", return_value={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 70, "method": "tools/call",
+            "params": {
+                "name": "bulk_duplicate_assets",
+                "arguments": {
+                    "duplicates": [
+                        {"path": "/Game/Foo", "dest_path": "/Game/Archive/Foo"},
+                        {"path": "/Game/Bar", "dest_path": "/Game/Archive/Bar"},
+                    ],
+                },
+            },
+        })
+
+    assert m.call_count == 2
+    assert m.call_args_list[0].args == ("duplicate_asset", {"path": "/Game/Foo", "dest_path": "/Game/Archive/Foo"})
+    assert m.call_args_list[1].args == ("duplicate_asset", {"path": "/Game/Bar", "dest_path": "/Game/Archive/Bar"})
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is True
+    assert body["total"] == 2
+    assert body["duplicated"] == 2
+    assert body["failed"] == 0
+    assert body["results"][0] == {
+        "path": "/Game/Foo", "dest_path": "/Game/Archive/Foo",
+        "ok": True, "error_code": None, "error_message": None,
+    }
+
+
+def test_bulk_duplicate_assets_partial_failure_stops_when_continue_on_error_false():
+    """First duplicate succeeds, second fails (e.g. dest already exists),
+    continue_on_error=False stops after #2. Upstream error code preserved."""
+    ok_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    err_resp = {"jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32000,
+        "message": "duplicate_asset: dest_exists: '/Game/Archive/Bar' already exists",
+    }}
+    with patch.object(bridge, "call_ue", side_effect=[ok_resp, err_resp]) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 71, "method": "tools/call",
+            "params": {
+                "name": "bulk_duplicate_assets",
+                "arguments": {
+                    "duplicates": [
+                        {"path": "/Game/Foo", "dest_path": "/Game/Archive/Foo"},
+                        {"path": "/Game/Bar", "dest_path": "/Game/Archive/Bar"},
+                        {"path": "/Game/Baz", "dest_path": "/Game/Archive/Baz"},
+                    ],
+                    "continue_on_error": False,
+                },
+            },
+        })
+
+    assert m.call_count == 2
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is False
+    assert body["total"] == 3
+    assert body["duplicated"] == 1
+    assert body["failed"] == 1
+    assert body["results"][1]["error_code"] == -32000
+    assert body["results"][1]["dest_path"] == "/Game/Archive/Bar"
+
+
+def test_bulk_duplicate_assets_rejects_missing_duplicates():
+    """Schema enforces duplicates as required."""
+    resp = bridge.handle({
+        "jsonrpc": "2.0", "id": 72, "method": "tools/call",
+        "params": {"name": "bulk_duplicate_assets", "arguments": {}},
+    })
+    assert resp["error"]["code"] == -32602
+    assert "duplicates" in resp["error"]["message"]
+
+
+def test_bulk_duplicate_assets_rejects_dotdot_in_dest_path():
+    """dest_path gets the same defensive shape-checks as path: `..` segment
+    -> -32602 with the entry index. Catches the classic "I'll traverse
+    out of /Game" mistake at the validator rather than after dispatch."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 73, "method": "tools/call",
+            "params": {
+                "name": "bulk_duplicate_assets",
+                "arguments": {
+                    "duplicates": [
+                        {"path": "/Game/Foo", "dest_path": "/Game/Archive/../Hidden"},
+                    ],
+                },
+            },
+        })
+
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "duplicates[0].dest_path" in resp["error"]["message"]
+    assert ".." in resp["error"]["message"]
 
 
 def test_inspect_data_asset_is_synthetic():
