@@ -1367,10 +1367,23 @@ def synthetic_set_camera_transform(req_id, args):
             "message": f"set_camera_transform: invalid_value_shape: {e}",
         })
 
+    # CRITICAL: UE 5.7 Python `unreal.Rotator(a, b, c)` is `(roll, pitch, yaw)`
+    # POSITIONALLY -- the args follow FRotator's struct-memory order, not the
+    # named-property order. Live MCP testing on 2026-05-12 confirmed this via a
+    # one-line probe: `unreal.Rotator(1, 2, 3)` returns `pitch=2 yaw=3 roll=1`.
+    # The earlier positional `Rotator({rp}, {ry}, {rr})` form silently
+    # scrambled rotation -- a caller asking for pitch=-20/yaw=45/roll=0 got
+    # back pitch=45/yaw=0/roll=-20 from the next get_camera_transform. We sidestep
+    # the trap by constructing the rotator then setting properties by name; the
+    # observable round-trip is now lossless.
     py_code = (
         "import unreal\n"
         "sub = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)\n"
-        f"sub.set_level_viewport_camera_info(unreal.Vector({lx}, {ly}, {lz}), unreal.Rotator({rp}, {ry}, {rr}))\n"
+        "_r = unreal.Rotator()\n"
+        f"_r.pitch = {rp}\n"
+        f"_r.yaw = {ry}\n"
+        f"_r.roll = {rr}\n"
+        f"sub.set_level_viewport_camera_info(unreal.Vector({lx}, {ly}, {lz}), _r)\n"
     )
 
     exec_resp = call_ue("execute_unreal_python", {"code": py_code})
