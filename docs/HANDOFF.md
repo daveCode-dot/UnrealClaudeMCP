@@ -1275,3 +1275,70 @@ Every standard asset-lifecycle operation now has a bulk variant with consistent 
 - **All deferred-handler items from the original HANDOFF roadmap are now CLOSED or in C++-only territory.** No outstanding bridge-side synthetics. C++-only items remaining: Sequencer keyframe authoring, Movie Render Queue. Both need attended cold-compile + Codex per the multi-agent partitioning.
 - **The `bulk_*_assets` family completion is a natural milestone.** Future bulk_* candidates (e.g. `bulk_inspect_*`, `bulk_set_*`) follow the same playbook but layer over composed-inspect or property-mutation handlers; cost is well-understood.
 - **Sixteenth consecutive closing-note.** Session 2026-05-12 has now spanned 7+ documented windows. The cadence is the project rhythm.
+
+---
+
+**Session 2026-05-12 (autopilot extension — multi-agent ensemble shipped, 12 PRs of doc + test hardening):**
+
+This window picked up after the 16th closing-note and pushed a "documentation + test hardening" wave to lock in canonical-count discipline and exercise the guards / branches that newer PRs had introduced without test coverage. No new tools shipped; the scaffolding around the existing 80-tool surface got tightened by ~62 atomic commits across 12 PRs.
+
+**Mid-session pivot: multi-agent ensemble is now the standing workflow.**
+
+User explicit directive: "always from the beginning till the end, multi-agent work. You're the leader, and you review all of the codes that you receive from all of the AI models." The rule is now baked into the operating expectation, not a per-PR choice. Every substantive change in this session was reviewed by at least one external model before push.
+
+**Multi-agent roster wired this session (slot names; specific provider/model identifiers live in the maintainer's local memory file, not this public doc):**
+
+| Slot | Used for |
+|---|---|
+| Orchestrator + integrator | Opus reviews every diff, integrates, ships PRs |
+| C++ author | Codex CLI (Sequencer / MRQ on attended sessions) |
+| Python author + recon | Sonnet subagent (read-only — codebase recon + opportunity scans) |
+| C++ trap-hunter | NVIDIA-cloud reasoning model — pre-flight UE 5.7 API audits |
+| Python diff reviewer | NVIDIA-cloud 70B-class instruct model — convention / dispatch checks |
+| Reasoning ensemble | NVIDIA-cloud (3 different vendors / MoE topologies fan-out for high-stakes diffs) |
+| Local first-opinion | Local OSS LLM (~33B reasoning-tuned) — free + fast trap-hunt |
+| Local scaffold | Local OSS LLM (~8B) — quick design hints |
+| PR-level second opinion | GitHub Copilot CLI (`gh copilot`) — diff explanation pre-merge |
+| Post-PR safety net | Gemini auto-review (CI bot) — automatic on PR open |
+
+The MCP servers in play this session: a NVIDIA cloud plugin (`mcp__plugin_nvidia-models_*`) and a local OSS LLM bridge (`mcp__local-llm__*`). The older standalone NVIDIA endpoint disconnected mid-session; the new plugin replaces it with a stronger roster.
+
+**On-disk provisioning that the next session may try and should know about:**
+- A local-OSS flagship MoE model is provisioned on the F: drive but OOM-locked on the current RAM budget (needs ~76 GiB, system has ~37 GiB). A cloud-hosted variant in the same tuning lineage substitutes.
+
+**User naming conventions (memorize so the next session doesn't re-learn them):**
+- "gamma" = the local OSS ~8B model. NOT Gemini, NOT Gamma.app.
+- "the super one" = the NVIDIA-tuned reasoning model. After this session, that means the NVIDIA-cloud-hosted variant (the local 123.6B variant remains OOM-locked).
+
+**PRs shipped in this autopilot-extension window (12 PRs, ~62 atomic commits):**
+
+| PR | Branch | Commits | Effect |
+|---|---|---:|---|
+| #141 | chore/drift-narrative-fixes | 5 | Bridge docstring + manifest description + TOOLS.md L16 + ARCHITECTURE mermaid all reconciled to 80 / 64 / 16. Cleared pre-existing "75 tools / 11 synthetics" stale prose. |
+| #142 | chore/handler-error-format-annotations | 11 | 11 legacy handlers now carry accurate "Error format:" annotations (9 free-form OutError, 2 no-error). |
+| #143 | docs/tools-md-missing-synthetic-sections | 7 | docs/TOOLS.md backfilled with 7 missing tool sections. |
+| #144 | tests/inspect-synthetic-parity | 6 | 8 new tests for inspect_sound_submix / audio_bus / material_function / metasound error-branch parity. |
+| #145 | tests/bulk-test-coverage | 5 | 5 new tests for bulk_*_assets continue_on_error=True + bulk_duplicate edge cases. |
+| #146 | chore/synthetic-isinstance-guards | 6 | All 16 synthetics now check isinstance(args, dict) early. |
+| #147 | chore/drift-sweep-extend-bridge-manifest | 3 | drift_sweep.py scans bridge.py + manifest.json + ARCHITECTURE.md. Manifest desc + README hero converted from English-word counts to digits. |
+| #148 | tests/synthetic-misc-coverage | 3 | set_camera_transform no-op-read + make_response req_id round-trip (string + null + large-int). |
+| #149 | docs/tools-md-fix-bulk-param-names | 2 | bulk_rename / bulk_duplicate param names corrected (`items` → `renames` / `duplicates`). |
+| #150 | chore/bridge-type-hints | 9 | Full type-hint sweep across 16 synthetics + 5 helpers + handle/main. req_id intentionally untyped (MCP allows int/str/null). |
+| #151 | chore/manifest-sync-tighten | 2 | Reverse-direction required-param drift check (bridge.required ⊆ manifest.params). |
+| #152 | tests/synthetic-invalid-args-guards | 1 (24 parametrize) | Locks PR6 isinstance guard across 6 synthetics × 4 bad-args shapes. |
+
+**Tool / test totals at the end of this window:**
+- 80 tools (unchanged — focus was hardening scaffolding).
+- pytest: 243 → 282 (+39). Driven by PR4 (+8), PR5 (+5), PR9 (+3), PR10 (+1), PR12 (+22 net from parametrize).
+- Drift sweep: 80 / 64 / 16 / 282 / 0.9.1 / 5.7, clean.
+
+**What to watch in next session:**
+
+- **First action: restart Claude Code.** Twelve PRs touched the bridge module + manifest + tests. Same MCP-cache-stale class of issue. Single restart unblocks all simultaneously.
+- **No remaining bridge-side hardening from this round.** Every gap surfaced by multi-agent review was either filled or explicitly deferred with a recorded reason (e.g. bulk_duplicate new_name slash/dot validation — behaviour change, not doc fix).
+- **C++-only deferred items unchanged:** Sequencer keyframe authoring + Movie Render Queue still pending. Both need attended Codex per multi-agent partitioning (Codex codes C++, Sonnet codes Python, Opus reviews + integrates).
+- **Drift_sweep extension now covers bridge module + manifest + ARCHITECTURE.** Don't bypass; the next stale-count bump auto-fails CI.
+
+**STANDING RULE (do not relax without explicit user request): multi-agent ensemble review on every substantive change.** The maintainer has provisioned NVIDIA cloud access, local OSS LLM tooling, Copilot CLI, and the Gemini CI bot specifically so Opus does not work solo. Use them. Pattern: dispatch 2-4 reviewers in parallel during ~30s waiting windows; integrate findings into the final diff before push. The codified version + per-provider configuration lives in the maintainer's private memory file (`feedback_multi_agent_workflow.md`), not in this public doc.
+
+**Seventeenth consecutive closing-note.** Session 2026-05-12 now spans 8+ documented windows.
