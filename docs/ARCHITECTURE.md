@@ -209,6 +209,32 @@ These are real bugs / surprises that cost hours to find. Documented here as a de
 - `TUniquePtr<T>` defaulted destructors require the type to be complete. If you `=default` the destructor of a class that owns a `TUniquePtr<FTcpListener>` in its header, MSVC errors with "incomplete type". Move the destructor implementation to the `.cpp` so the include for the held type lives there.
 - `UTexture` mutations require the full `PreEditChange(nullptr)` + `Modify()` + set property + `PostEditChangeProperty(emptyEvent)` + (optional `UpdateResource()` for GPU rebuild) + `UEditorAssetLibrary::SaveLoadedAsset(...)` dance. Skipping `UpdateResource()` lets the in-editor preview keep showing the **old** texture even after the new settings are saved to disk; reopening the asset doesn't refresh it because the cached resource is still the pre-edit one. Reference: `Engine/Source/Runtime/Engine/Classes/Engine/Texture.h:1883`.
 - `TextureCompressionSettings` enum names drift across UE versions. UE 5.7 source at `Engine/Source/Runtime/Engine/Classes/Engine/TextureDefines.h` is the only authoritative list. The plan we shipped originally listed `TC_BC4`, `TC_BC5`, and `TEXTUREGROUP_Bake` as valid; none of those exist in UE 5.7. Always verify enum names against the version's source rather than copy-pasting from older docs.
+- **UE 5.7 Python wrapper constructors do not always take args in property-name order.** Some take args in struct-memory order, which silently scrambles values if you assume the docstring property order matches positionally. Probed live on 2026-05-12 from the running editor:
+
+  | Constructor | Positional order is... | Safe? |
+  |---|---|---|
+  | `unreal.Vector(1, 2, 3)` | `x=1, y=2, z=3` | ✓ matches property order |
+  | `unreal.Vector2D(10, 20)` | `x=10, y=20` | ✓ matches property order |
+  | `unreal.LinearColor(0.1, 0.2, 0.3, 0.4)` | `r=0.1, g=0.2, b=0.3, a=0.4` | ✓ matches property order |
+  | `unreal.Quat(1, 2, 3, 4)` | `x=1, y=2, z=3, w=4` | ✓ matches property order |
+  | `unreal.Rotator(1, 2, 3)` | **`roll=1, pitch=2, yaw=3`** | ✗ struct-memory order (Roll, Pitch, Yaw); fixed in PR #127 |
+  | `unreal.Color(11, 22, 33, 44)` | **`b=11, g=22, r=33, a=44`** | ✗ BGRA struct-memory order (DirectX legacy); no current usage but the trap is real |
+
+  **Rule:** for any `unreal.*` struct construction in bridge-emitted Python, use empty constructor + named property assignment instead of positional args:
+
+  ```python
+  _r = unreal.Rotator()
+  _r.pitch = pitch_value
+  _r.yaw = yaw_value
+  _r.roll = roll_value
+  ```
+
+  Property assignment is invariant to UE's struct memory layout. Positional construction is fine only for `Vector`, `Vector2D`, `LinearColor`, `Quat` per the probe; treat any future struct as suspect until probed. A one-liner probe can validate any new struct in seconds:
+
+  ```python
+  s = unreal.SomeStruct(1, 2, 3)
+  unreal.log(f"__PROBE__ unreal.SomeStruct(1,2,3) -> {s.field_a} {s.field_b} {s.field_c} __END__")
+  ```
 
 ## License
 
