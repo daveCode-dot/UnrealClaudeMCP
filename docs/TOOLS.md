@@ -2742,7 +2742,7 @@ Move multiple assets into a single destination folder by composing the [`move_as
 
 Rename multiple assets in one MCP call by composing the [`rename_asset`](#rename_asset) C++ handler bridge-side. Each rename leaves a redirector at the source per UE's standard rename semantics, so existing references continue to resolve until [`fix_up_redirectors`](#fix_up_redirectors) sweeps them.
 
-**Bridge-side synthetic tool.** Pure Python — loops over `items[]` and dispatches one `call_ue("rename_asset", {"path": ..., "new_name": ...})` per entry. Items take per-entry destinations (each asset has its own new name), unlike `bulk_move_assets` where all assets share one `dest_folder`.
+**Bridge-side synthetic tool.** Pure Python — loops over `renames[]` and dispatches one `call_ue("rename_asset", {"path": ..., "new_name": ...})` per entry. Each entry takes its own new name, unlike `bulk_move_assets` where all assets share one `dest_folder`.
 
 **Partial-failure model:** identical shape to the other `bulk_*_assets` synthetics. `continue_on_error: true` (default) keeps going after individual failures; `continue_on_error: false` aborts at the first failure.
 
@@ -2751,14 +2751,14 @@ Rename multiple assets in one MCP call by composing the [`rename_asset`](#rename
 - `new_name` must be a non-empty string with no slash (`/`) or dot (`.`) characters — `rename_asset` is name-only, not a move. Cross-folder renames go through `bulk_move_assets`.
 
 **Params**
-- `items` (array of object, required) - per-entry rename instructions:
+- `renames` (array of object, required) - per-entry rename instructions:
   - `path` (string, required) - source asset object path
   - `new_name` (string, required) - new asset name (no slashes or dots)
 - `continue_on_error` (bool, optional, default `true`) - when `false`, abort after the first per-entry failure.
 
 **Result**
 - `ok` (bool) - `true` only when `failed == 0`
-- `total` (int) - `items.length`
+- `total` (int) - `renames.length`
 - `renamed` (int) - count of per-entry successes
 - `failed` (int) - count of per-entry failures
 - `results` (array) - one entry per attempted item, in input order:
@@ -2769,12 +2769,12 @@ Rename multiple assets in one MCP call by composing the [`rename_asset`](#rename
   - `error_code` (int or null) - preserved from the upstream `rename_asset` response on failure
   - `error_message` (string or null) - preserved from the upstream `rename_asset` response on failure
 
-**Errors (envelope-level):** `-32602` (missing or non-list `items`, non-dict entry, missing `path` or `new_name`, NUL or `..` in `path`, slash or dot in `new_name`, non-bool `continue_on_error`).
+**Errors (envelope-level):** `-32602` (missing or non-list `renames`, non-dict entry, missing `path` or `new_name`, NUL or `..` in `path`, slash or dot in `new_name`, non-bool `continue_on_error`).
 
 **Example - happy path**
 ```json
 {"jsonrpc":"2.0","id":1,"method":"bulk_rename_assets","params":{
-  "items": [
+  "renames": [
     {"path": "/Game/Foo/T_Old", "new_name": "T_New"},
     {"path": "/Game/Bar/M_Old", "new_name": "M_New"}
   ]
@@ -2784,7 +2784,7 @@ Rename multiple assets in one MCP call by composing the [`rename_asset`](#rename
 **Example - fail fast**
 ```json
 {"jsonrpc":"2.0","id":2,"method":"bulk_rename_assets","params":{
-  "items": [
+  "renames": [
     {"path": "/Game/A", "new_name": "A2"},
     {"path": "/Game/B", "new_name": "B2"}
   ],
@@ -2798,28 +2798,28 @@ Rename multiple assets in one MCP call by composing the [`rename_asset`](#rename
 
 Duplicate multiple assets into per-entry destinations in one MCP call by composing the [`duplicate_asset`](#duplicate_asset) C++ handler bridge-side. Unlike `bulk_move_assets`, each item has its own `dest_path` and (optionally) `new_name`, so a single call can scatter copies across folders.
 
-**Bridge-side synthetic tool.** Pure Python — loops over `items[]` and dispatches one `call_ue("duplicate_asset", {"path": ..., "dest_path": ..., "new_name": ...})` per entry. Mirrors `bulk_rename_assets`'s per-entry items shape.
+**Bridge-side synthetic tool.** Pure Python — loops over `duplicates[]` and dispatches one `call_ue("duplicate_asset", {"path": ..., "dest_path": ..., "new_name": ...})` per entry. Mirrors `bulk_rename_assets`'s per-entry duplicates shape.
 
 **Partial-failure model:** identical shape to the other `bulk_*_assets` synthetics. `continue_on_error: true` (default) keeps going after individual failures; `continue_on_error: false` aborts at the first failure.
 
 **Per-entry validation:**
 - `path` (source) must be a non-empty string; NUL byte (`\x00`) and `..` segments rejected envelope-level.
 - `dest_path` must be a non-empty string; NUL byte (`\x00`) and `..` segments rejected.
-- `new_name` (optional override) must be a non-empty string with no slash (`/`) or dot (`.`) characters when provided. When omitted, the duplicate gets the source asset's name in `dest_path`.
+- `new_name` (optional override) — when provided, forwarded to `duplicate_asset` as-is. Unlike `bulk_rename_assets`, the bridge does NOT pre-validate `new_name` for slashes or dots; downstream `duplicate_asset` is responsible for any naming rules. When omitted, the duplicate gets the asset name implied by `dest_path`.
 
 **Params**
-- `items` (array of object, required) - per-entry duplicate instructions:
+- `duplicates` (array of object, required) - per-entry duplicate instructions:
   - `path` (string, required) - source asset object path
   - `dest_path` (string, required) - destination package path (folder + optional new name)
-  - `new_name` (string, optional) - asset name override; no slashes or dots
+  - `new_name` (string, optional) - asset name override; forwarded to duplicate_asset
 - `continue_on_error` (bool, optional, default `true`) - when `false`, abort after the first per-entry failure.
 
 **Result**
 - `ok` (bool) - `true` only when `failed == 0`
-- `total` (int) - `items.length`
+- `total` (int) - `duplicates.length`
 - `duplicated` (int) - count of per-entry successes
 - `failed` (int) - count of per-entry failures
-- `results` (array) - one entry per attempted item, in input order:
+- `results` (array) - one entry per attempted duplicate, in input order:
   - `path` (string) - source path
   - `dest_path` (string) - requested destination
   - `new_name` (string or null) - name override if provided
@@ -2828,12 +2828,12 @@ Duplicate multiple assets into per-entry destinations in one MCP call by composi
   - `error_code` (int or null) - preserved from the upstream `duplicate_asset` response on failure
   - `error_message` (string or null) - preserved from the upstream `duplicate_asset` response on failure
 
-**Errors (envelope-level):** `-32602` (missing or non-list `items`, non-dict entry, missing `path` or `dest_path`, NUL or `..` in `path` or `dest_path`, slash or dot in `new_name`, non-bool `continue_on_error`).
+**Errors (envelope-level):** `-32602` (missing or non-list `duplicates`, non-dict entry, missing `path` or `dest_path`, NUL or `..` in `path` or `dest_path`, non-bool `continue_on_error`).
 
 **Example - happy path**
 ```json
 {"jsonrpc":"2.0","id":1,"method":"bulk_duplicate_assets","params":{
-  "items": [
+  "duplicates": [
     {"path": "/Game/Templates/T_Base", "dest_path": "/Game/A/T_BaseCopy"},
     {"path": "/Game/Templates/M_Base", "dest_path": "/Game/B/M_BaseCopy"}
   ]
@@ -2843,7 +2843,7 @@ Duplicate multiple assets into per-entry destinations in one MCP call by composi
 **Example - per-entry name override**
 ```json
 {"jsonrpc":"2.0","id":2,"method":"bulk_duplicate_assets","params":{
-  "items": [
+  "duplicates": [
     {"path": "/Game/T_Stamp", "dest_path": "/Game/Variants", "new_name": "T_Stamp_A"},
     {"path": "/Game/T_Stamp", "dest_path": "/Game/Variants", "new_name": "T_Stamp_B"}
   ]
