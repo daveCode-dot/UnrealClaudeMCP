@@ -881,7 +881,7 @@ def test_inspect_data_asset_propagates_asset_not_found():
     body = {
         "ok": False,
         "error_code": "asset_not_found",
-        "error_message": "Asset not found: /Game/Data/Missing",
+        "error_message": "inspect_data_asset: asset_not_found: /Game/Data/Missing",
     }
     marker_hex = "deadbeefcaf0"
     log_line = f"__DATA_{marker_hex}__{json.dumps(body)}__END__"
@@ -1948,3 +1948,64 @@ def test_main_skips_blank_and_malformed_lines(monkeypatch, capsys):
     lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
     assert len(lines) == 1
     assert json.loads(lines[0])["id"] == 1
+
+
+def test_synthetic_inspect_asset_not_found_messages_use_canonical_prefix() -> None:
+    """Every synthetic_inspect_* tool that emits an `asset_not_found` logical
+    error must shape the error message as `'<tool>: asset_not_found: <path>'`.
+
+    This guard exists because the convention drifted in practice: two of the
+    five inspectors used bare `'Asset not found: <path>'` while three used
+    `'<tool>: asset_not_found: Asset not found: <path>'` (double-labelled,
+    redundant). Live MCP testing on 2026-05-12 surfaced the inconsistency,
+    not any unit test, because each inspector's pytest happy-path mocks the
+    error message it expects to receive -- so per-tool tests can't catch
+    cross-tool drift.
+
+    This test reads bridge.py source and asserts that no `synthetic_inspect_*`
+    function contains a bare `'Asset not found:'` literal or the redundant
+    `'asset_not_found: Asset not found:'` chain. If a future inspector
+    regresses to either pattern, this test fails fast.
+    """
+    import re
+    import pathlib
+
+    bridge_src = (
+        pathlib.Path(bridge.__file__).read_text(encoding="utf-8", errors="replace")
+    )
+
+    # Build pattern at runtime so the literal we're guarding against can never
+    # accidentally match this test file itself when the personal-leaks scanner
+    # walks the repo. (Same defensive trick the leak detector uses.)
+    bare_literal = "'Asset" + " not found:"
+    redundant = "asset_not_found: Asset" + " not found:"
+
+    # Find all synthetic_inspect_* function blocks and check each.
+    blocks = re.findall(
+        r"def\s+synthetic_inspect_\w+\([^)]*\):.*?(?=\ndef\s|\Z)",
+        bridge_src,
+        flags=re.DOTALL,
+    )
+    assert blocks, "no synthetic_inspect_* functions found -- did the bridge module move?"
+
+    offenders: list[str] = []
+    for block in blocks:
+        # First line of the block is the def signature -- pull the function name
+        # out for the error message.
+        match = re.match(r"def\s+(synthetic_inspect_\w+)", block)
+        name = match.group(1) if match else "<unknown>"
+        if bare_literal in block:
+            offenders.append(
+                f"{name}: contains bare {bare_literal!r} -- use "
+                f"'<tool>: asset_not_found: <path>' canonical form"
+            )
+        if redundant in block:
+            offenders.append(
+                f"{name}: contains redundant {redundant!r} -- drop the "
+                f"second 'Asset not found:' segment"
+            )
+
+    assert not offenders, (
+        "synthetic_inspect_* error-message shape drift detected:\n  "
+        + "\n  ".join(offenders)
+    )
