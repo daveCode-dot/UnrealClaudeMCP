@@ -1114,12 +1114,35 @@ def _run_marker_pattern(req_id, tool_name, marker_prefix, py_code, context=""):
     for entry in reversed(lines):
         msg = entry.get("message", "") or ""
         if marker_prefix in msg:
+            # Two distinct failure modes share this block; split the except
+            # clauses so the error_code returned to the caller matches the
+            # actual cause:
+            #   1. marker present but __END__ missing -> str.index raises
+            #      ValueError. Caller-actionable code: 'marker_truncated'.
+            #   2. payload extracted but JSON-parse fails -> json.JSONDecodeError.
+            #      Caller-actionable code: 'invalid_json'.
+            # (Previously both fell through to 'invalid_json' because
+            # json.JSONDecodeError is a ValueError subclass. The conflation
+            # made marker-truncation look like a payload-content bug, which
+            # is the wrong place to start triaging.)
             try:
                 start = msg.index(marker_prefix) + len(marker_prefix)
                 end = msg.index(end_token, start)
                 payload = msg[start:end]
+            except ValueError:
+                ctx_suffix = f" for path '{context}'" if context else ""
+                return _wrap_tool_result(req_id, {
+                    "ok": False,
+                    "error_code": "marker_truncated",
+                    "error_message": (
+                        f"{tool_name}: marker_truncated: end token '{end_token}' missing "
+                        f"after marker prefix '{marker_prefix}'{ctx_suffix} (caller can "
+                        "retry; LogPython buffer may have truncated the line)"
+                    ),
+                })
+            try:
                 data = json.loads(payload)
-            except (ValueError, json.JSONDecodeError):
+            except json.JSONDecodeError:
                 ctx_suffix = f" for path '{context}'" if context else ""
                 return _wrap_tool_result(req_id, {
                     "ok": False,
