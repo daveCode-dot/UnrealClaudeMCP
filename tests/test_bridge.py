@@ -1095,6 +1095,44 @@ def test_bulk_move_assets_partial_failure_stops_when_continue_on_error_false():
     assert body["results"][1]["error_code"] == -32000
 
 
+def test_bulk_move_assets_partial_failure_continues_when_continue_on_error_true():
+    """Second path fails, but continue_on_error=True (default) keeps the loop
+    going and surfaces per-path errors in results[]. All three paths attempted;
+    the failure does NOT abort the third call. Mirrors the
+    _stops_when_continue_on_error_false test but exercises the default-on
+    branch that the original partial-failure test never covered."""
+    ok_resp_1 = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    err_resp = {"jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32000,
+        "message": "move_asset: not_found: '/Game/Bar'",
+    }}
+    ok_resp_2 = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    with patch.object(bridge, "call_ue", side_effect=[ok_resp_1, err_resp, ok_resp_2]) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+            "params": {
+                "name": "bulk_move_assets",
+                "arguments": {
+                    "paths": ["/Game/Foo", "/Game/Bar", "/Game/Baz"],
+                    "dest_folder": "/Game/Archive",
+                    "continue_on_error": True,
+                },
+            },
+        })
+
+    assert m.call_count == 3
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is False
+    assert body["total"] == 3
+    assert body["moved"] == 2
+    assert body["failed"] == 1
+    assert body["dest_folder"] == "/Game/Archive"
+    assert body["results"][0]["ok"] is True
+    assert body["results"][1]["ok"] is False
+    assert body["results"][1]["error_code"] == -32000
+    assert body["results"][2]["ok"] is True
+
+
 def test_bulk_move_assets_rejects_missing_paths():
     """Schema enforces paths as required; missing it returns -32602."""
     resp = bridge.handle({
@@ -1249,6 +1287,45 @@ def test_bulk_rename_assets_partial_failure_stops_when_continue_on_error_false()
     assert body["results"][1]["error_code"] == -32000
 
 
+def test_bulk_rename_assets_partial_failure_continues_when_continue_on_error_true():
+    """Second rename fails, but continue_on_error=True (default) keeps the
+    loop going and surfaces per-entry errors in results[]. All three renames
+    attempted; the failure does NOT abort the third call. Pairs with the
+    existing _stops_when_continue_on_error_false test to cover both branches."""
+    ok_resp_1 = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    err_resp = {"jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32000,
+        "message": "rename_asset: name_collision: '/Game/BarRenamed' already exists",
+    }}
+    ok_resp_2 = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    with patch.object(bridge, "call_ue", side_effect=[ok_resp_1, err_resp, ok_resp_2]) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 61, "method": "tools/call",
+            "params": {
+                "name": "bulk_rename_assets",
+                "arguments": {
+                    "renames": [
+                        {"path": "/Game/Foo", "new_name": "FooRenamed"},
+                        {"path": "/Game/Bar", "new_name": "BarRenamed"},
+                        {"path": "/Game/Baz", "new_name": "BazRenamed"},
+                    ],
+                    "continue_on_error": True,
+                },
+            },
+        })
+
+    assert m.call_count == 3
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is False
+    assert body["total"] == 3
+    assert body["renamed"] == 2
+    assert body["failed"] == 1
+    assert body["results"][0]["ok"] is True
+    assert body["results"][1]["ok"] is False
+    assert body["results"][1]["error_code"] == -32000
+    assert body["results"][2]["ok"] is True
+
+
 def test_bulk_rename_assets_rejects_missing_renames():
     """Schema enforces renames as required."""
     resp = bridge.handle({
@@ -1395,6 +1472,46 @@ def test_bulk_duplicate_assets_partial_failure_stops_when_continue_on_error_fals
     assert body["results"][1]["dest_path"] == "/Game/Archive/Bar"
 
 
+def test_bulk_duplicate_assets_partial_failure_continues_when_continue_on_error_true():
+    """Second duplicate fails (e.g. dest already exists), but
+    continue_on_error=True (default) keeps the loop going. All three
+    duplicates attempted; per-entry error surfaced in results[]. Mirrors the
+    bulk_move / bulk_rename variants of the same test."""
+    ok_resp_1 = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    err_resp = {"jsonrpc": "2.0", "id": 1, "error": {
+        "code": -32000,
+        "message": "duplicate_asset: dest_exists: '/Game/Archive/Bar' already exists",
+    }}
+    ok_resp_2 = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
+    with patch.object(bridge, "call_ue", side_effect=[ok_resp_1, err_resp, ok_resp_2]) as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 71, "method": "tools/call",
+            "params": {
+                "name": "bulk_duplicate_assets",
+                "arguments": {
+                    "duplicates": [
+                        {"path": "/Game/Foo", "dest_path": "/Game/Archive/Foo"},
+                        {"path": "/Game/Bar", "dest_path": "/Game/Archive/Bar"},
+                        {"path": "/Game/Baz", "dest_path": "/Game/Archive/Baz"},
+                    ],
+                    "continue_on_error": True,
+                },
+            },
+        })
+
+    assert m.call_count == 3
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is False
+    assert body["total"] == 3
+    assert body["duplicated"] == 2
+    assert body["failed"] == 1
+    assert body["results"][0]["ok"] is True
+    assert body["results"][1]["ok"] is False
+    assert body["results"][1]["error_code"] == -32000
+    assert body["results"][1]["dest_path"] == "/Game/Archive/Bar"
+    assert body["results"][2]["ok"] is True
+
+
 def test_bulk_duplicate_assets_rejects_missing_duplicates():
     """Schema enforces duplicates as required."""
     resp = bridge.handle({
@@ -1426,6 +1543,48 @@ def test_bulk_duplicate_assets_rejects_dotdot_in_dest_path():
     assert resp["error"]["code"] == -32602
     assert "duplicates[0].dest_path" in resp["error"]["message"]
     assert ".." in resp["error"]["message"]
+
+
+def test_bulk_duplicate_assets_rejects_missing_dest_path():
+    """Each entry's dest_path is required; missing it returns -32602 with
+    'dest_path' in the message. No call_ue dispatched. Parity with
+    bulk_move_assets_rejects_missing_dest_folder."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 75, "method": "tools/call",
+            "params": {
+                "name": "bulk_duplicate_assets",
+                "arguments": {
+                    "duplicates": [{"path": "/Game/Foo"}],
+                },
+            },
+        })
+
+    assert m.call_count == 0, "validation must short-circuit before any call_ue"
+    assert resp["error"]["code"] == -32602
+    assert "dest_path" in resp["error"]["message"]
+
+
+def test_bulk_duplicate_assets_rejects_path_with_nul_byte():
+    """Same defensive shape-checks as bulk_move/bulk_rename: NUL byte in any
+    entry's path -> -32602, no call_ue dispatched."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 76, "method": "tools/call",
+            "params": {
+                "name": "bulk_duplicate_assets",
+                "arguments": {
+                    "duplicates": [
+                        {"path": "/Game/Good", "dest_path": "/Game/Archive/Good"},
+                        {"path": "/Game/Bad\x00Asset", "dest_path": "/Game/Archive/Bad"},
+                    ],
+                },
+            },
+        })
+
+    assert m.call_count == 0, "validation must short-circuit before any call_ue"
+    assert resp["error"]["code"] == -32602
+    assert "NUL" in resp["error"]["message"] or "nul" in resp["error"]["message"].lower()
 
 
 def test_inspect_data_asset_is_synthetic():
