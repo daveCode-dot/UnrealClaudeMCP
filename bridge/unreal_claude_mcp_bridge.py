@@ -262,6 +262,20 @@ TOOLS = [
         },
     },
     {
+        "name": "inspect_metasound",
+        "description": "Inspect a MetaSoundSource or MetaSoundPatch asset by package path: returns leaf class name (which of the two it is), package path, and additional editor-accessible UPROPERTYs via dir() permissive enumeration. SYNTHETIC bridge-side handler: composes execute_unreal_python + get_log_lines via the marker pattern. Accepts either MetaSoundSource (emitter-attached) or MetaSoundPatch (reusable subgraph). Graph structure (nodes / connections) is NOT reflected here -- that requires a dedicated traversal pass. For surface-level metadata + exposed UPROPERTYs the permissive enumeration covers the common case. Logical errors (asset_not_found, wrong_asset_type, metasound_unavailable, marker_not_found, invalid_json) return as ok=False success envelopes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Package path to a MetaSoundSource or MetaSoundPatch asset, e.g. /Game/Audio/MS_Music. Must be a non-empty string.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
         "name": "list_tools",
         "description": "Return the names of every registered MCP method on the UE server.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -2633,6 +2647,109 @@ def synthetic_inspect_material_function(req_id, args):
     return _run_marker_pattern(req_id, "inspect_material_function", "__MATFUNC_" + marker + "__", py_code, context=path)
 
 
+def synthetic_inspect_metasound(req_id, args):
+    """Bridge-side shim: inspect a MetaSoundSource or MetaSoundPatch by package path.
+
+    Same canonical marker pattern as `synthetic_inspect_sound_class` /
+    `_submix` / `_audio_bus`. MetaSound assets in UE 5.7 come in two flavours
+    (Source for emitter-attached sound, Patch for reusable subgraph); both are
+    accepted by this synthetic and the leaf class name is returned so the
+    caller can distinguish.
+
+    Returns leaf class + package path + additional editor-accessible
+    UPROPERTYs via `dir(obj)` permissive enumeration. MetaSound's graph
+    structure (nodes, connections) is not reflected here -- that's a UE
+    Python API that requires a dedicated traversal pass (deferred). For
+    surface-level metadata (description, output settings, exposed inputs
+    via UPROPERTY) the permissive enumeration covers the common case.
+
+    Logical errors come back as `ok: False` success envelopes:
+      - asset_not_found: path doesn't resolve to a loadable asset
+      - wrong_asset_type: asset loaded but isn't a MetaSoundSource or Patch
+      - marker_not_found / marker_truncated / invalid_json: marker pattern
+        failures (post-PR #128 split)
+    """
+    path = args.get("path") if isinstance(args, dict) else None
+    if not isinstance(path, str) or not path:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "inspect_metasound: missing_required_field: 'path' must be a non-empty string",
+        })
+
+    marker = uuid.uuid4().hex[:12]
+    py_code = (
+        "import unreal, json\n"
+        "path = " + json.dumps(path) + "\n"
+        "obj = unreal.EditorAssetLibrary.load_asset(path)\n"
+        "if not obj:\n"
+        "    _out = {\n"
+        "        'ok': False,\n"
+        "        'error_code': 'asset_not_found',\n"
+        "        'error_message': 'inspect_metasound: asset_not_found: ' + path,\n"
+        "    }\n"
+        "    unreal.log('__METASOUND_" + marker + "__' + json.dumps(_out) + '__END__')\n"
+        "else:\n"
+        "    # Accept either Source (emitter-attached) or Patch (reusable\n"
+        "    # subgraph). hasattr check guards against engine variants that\n"
+        "    # might drop one of the classes from Python.\n"
+        "    accepted = []\n"
+        "    if hasattr(unreal, 'MetaSoundSource'):\n"
+        "        accepted.append(unreal.MetaSoundSource)\n"
+        "    if hasattr(unreal, 'MetaSoundPatch'):\n"
+        "        accepted.append(unreal.MetaSoundPatch)\n"
+        "    if not accepted:\n"
+        "        _out = {\n"
+        "            'ok': False,\n"
+        "            'error_code': 'metasound_unavailable',\n"
+        "            'error_message': 'inspect_metasound: metasound_unavailable: neither MetaSoundSource nor MetaSoundPatch is exposed in this UE Python build (Metasound plugin disabled?)',\n"
+        "        }\n"
+        "        unreal.log('__METASOUND_" + marker + "__' + json.dumps(_out) + '__END__')\n"
+        "    elif not isinstance(obj, tuple(accepted)):\n"
+        "        cls = obj.get_class()\n"
+        "        cls_name = cls.get_name() if cls else type(obj).__name__\n"
+        "        _out = {\n"
+        "            'ok': False,\n"
+        "            'error_code': 'wrong_asset_type',\n"
+        "            'error_message': 'inspect_metasound: wrong_asset_type: Asset is not a MetaSoundSource or MetaSoundPatch: ' + path,\n"
+        "            'actual_class': cls_name,\n"
+        "        }\n"
+        "        unreal.log('__METASOUND_" + marker + "__' + json.dumps(_out) + '__END__')\n"
+        "    else:\n"
+        "        cls = obj.get_class()\n"
+        "        cls_name = cls.get_name() if cls else None\n"
+        "        package_path = obj.get_path_name()\n"
+        "        additional_properties = []\n"
+        "        for n in [x for x in dir(obj) if not x.startswith('_')]:\n"
+        "            try:\n"
+        "                v = obj.get_editor_property(n)\n"
+        "            except Exception:\n"
+        "                continue\n"
+        "            tname = type(v).__name__\n"
+        "            try:\n"
+        "                if isinstance(v, bool):\n"
+        "                    vstr = str(v)\n"
+        "                elif isinstance(v, (int, float, str)):\n"
+        "                    vstr = str(v)\n"
+        "                elif isinstance(v, (list, tuple, dict)):\n"
+        "                    vstr = '<container:' + tname + '>'\n"
+        "                else:\n"
+        "                    vstr = '<unsupported>'\n"
+        "            except Exception:\n"
+        "                vstr = '<unsupported>'\n"
+        "            additional_properties.append({'name': n, 'type': tname, 'value': vstr})\n"
+        "        _out = {\n"
+        "            'ok': True,\n"
+        "            'path': path,\n"
+        "            'class': cls_name,\n"
+        "            'package_path': package_path,\n"
+        "            'additional_properties': additional_properties,\n"
+        "        }\n"
+        "        unreal.log('__METASOUND_" + marker + "__' + json.dumps(_out) + '__END__')\n"
+    )
+
+    return _run_marker_pattern(req_id, "inspect_metasound", "__METASOUND_" + marker + "__", py_code, context=path)
+
+
 # Map of tool-name -> bridge-side synthetic implementation. These are
 # tools that don't have a corresponding UE handler -- the bridge composes
 # existing UE handlers (or implements pure-protocol logic) to serve them.
@@ -2650,6 +2767,7 @@ SYNTHETIC_TOOLS = {
     "inspect_sound_submix": synthetic_inspect_sound_submix,
     "inspect_audio_bus": synthetic_inspect_audio_bus,
     "inspect_material_function": synthetic_inspect_material_function,
+    "inspect_metasound": synthetic_inspect_metasound,
 }
 
 

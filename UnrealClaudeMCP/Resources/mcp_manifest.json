@@ -666,6 +666,14 @@
         "path": "string (required) - package path to a UMaterialFunction asset, e.g. /Game/Materials/MF_PackedNormal; must be a non-empty string"
       },
       "returns": { "ok": "bool", "path": "string", "class": "string (leaf class name)", "package_path": "string (from obj.get_path_name())", "description": "string (asset description; empty when not set)", "exposed_to_library": "bool (whether the function appears in the material-function library)", "library_categories": "array of string (Text values stringified)", "inputs": "array of {name: string, type: string (always 'FunctionInput'), input_type: string (enum stringified)} - one entry per MaterialExpressionFunctionInput discovered in function_expressions", "outputs": "array of {name: string, type: string (always 'FunctionOutput')} - one entry per MaterialExpressionFunctionOutput", "additional_properties": "array of {name: string, type: string, value: string} - excludes the curated names", "error_code": "string (only on ok=False; one of 'asset_not_found', 'wrong_asset_type', 'marker_not_found', 'invalid_json')", "error_message": "string (only on ok=False)", "actual_class": "string (only on wrong_asset_type)" }
+    },
+    {
+      "name": "inspect_metasound",
+      "description": "Inspect a MetaSoundSource or MetaSoundPatch asset by package path: returns leaf class name, package path, and additional editor-accessible UPROPERTYs via dir() permissive enumeration. Accepts either MetaSoundSource (emitter-attached) or MetaSoundPatch (reusable subgraph). Graph structure is NOT reflected here (deferred). SYNTHETIC bridge-side handler that composes execute_unreal_python + get_log_lines via the marker pattern.",
+      "params": {
+        "path": "string (required) - package path to a MetaSoundSource or MetaSoundPatch asset, e.g. /Game/Audio/MS_Music; must be a non-empty string"
+      },
+      "returns": { "ok": "bool", "path": "string", "class": "string (leaf class name -- MetaSoundSource or MetaSoundPatch)", "package_path": "string (from obj.get_path_name())", "additional_properties": "array of {name: string, type: string (Python type-name), value: string (stringified for scalars; '<container:type>' for list/tuple/dict; '<unsupported>' otherwise)} - shallow reflection only, no recursion", "error_code": "string (only on ok=False; one of 'asset_not_found', 'wrong_asset_type', 'metasound_unavailable', 'marker_not_found', 'invalid_json')", "error_message": "string (only on ok=False)", "actual_class": "string (only on wrong_asset_type)" }
     }
   ]
 }
