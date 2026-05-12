@@ -988,6 +988,71 @@ def test_inspect_data_asset_marker_not_found():
     assert "retry typically resolves" in got["error_message"]
 
 
+def test_marker_pattern_truncated_returns_marker_truncated_error_code():
+    """If a LogPython line contains the marker prefix but the __END__ token
+    is missing (line truncated by the log ring's per-entry cap, or by
+    transient I/O), the bridge must return error_code='marker_truncated'
+    -- NOT 'invalid_json' (which the old conflated except clause did).
+    The two failure modes are different to triage:
+      - marker_truncated: retry the call; the payload was probably fine,
+        the log line just got cut off in transit.
+      - invalid_json: the payload itself is malformed; retry won't help,
+        the embedded Python's json.dumps emitted something wrong.
+    Conflating them sent maintainers to debug the wrong layer."""
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    # Marker present, but no __END__ token after it.
+    marker_hex = "deadbeefcaf0"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": f"__DATA_{marker_hex}__{{\"ok\":true,\"truncated"}
+    ]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        with patch.object(bridge, "uuid", fake_uuid):
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 175, "method": "tools/call",
+                "params": {"name": "inspect_data_asset", "arguments": {"path": "/Game/Truncated"}},
+            })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "marker_truncated", (
+        f"expected marker_truncated for truncated log line, got {got['error_code']!r}"
+    )
+    assert "end token" in got["error_message"]
+    assert "/Game/Truncated" in got["error_message"]
+
+
+def test_marker_pattern_bad_json_returns_invalid_json_error_code():
+    """If a LogPython line contains a full marker block (prefix + __END__)
+    but the payload between them isn't valid JSON, the bridge must return
+    error_code='invalid_json' -- NOT 'marker_truncated'. This is the half
+    the old conflated except clause handled correctly; this test pins the
+    behavior so the split can't regress it.
+    """
+    exec_resp = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True, "output": ""}}
+    marker_hex = "feedfacefeed"
+    log_resp = {"jsonrpc": "2.0", "id": 1, "result": {"lines": [
+        {"category": "LogPython", "message": f"__DATA_{marker_hex}__not-valid-json__END__"}
+    ]}}
+    fake_uuid = MagicMock()
+    fake_uuid.uuid4.return_value = MagicMock(hex=marker_hex)
+    with patch.object(bridge, "call_ue", side_effect=[exec_resp, log_resp]):
+        with patch.object(bridge, "uuid", fake_uuid):
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 176, "method": "tools/call",
+                "params": {"name": "inspect_data_asset", "arguments": {"path": "/Game/BadJSON"}},
+            })
+
+    assert resp["result"]["isError"] is False
+    got = json.loads(resp["result"]["content"][0]["text"])
+    assert got["ok"] is False
+    assert got["error_code"] == "invalid_json", (
+        f"expected invalid_json for malformed payload, got {got['error_code']!r}"
+    )
+
+
 def test_inspect_data_asset_rejects_missing_path():
     """Schema enforces path as required; missing it returns -32602."""
     resp = bridge.handle({
