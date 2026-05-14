@@ -220,7 +220,7 @@ TOOLS = [
     },
     {
         "name": "audit_blueprint_compile_status",
-        "description": "Enumerate every Blueprint under a content path and report its compile-status bucket (UpToDate/Dirty/Error/Unknown/BeingCreated). Composes find_assets + inspect_blueprint bridge-side. This is a READ-ONLY audit (no recompile triggered); pair with bulk_compile_blueprints to actually fix anything found. The inspect_blueprint handler currently does not surface blueprint_status — entries report Unknown for that bucket until the C++ side adds the field.",
+        "description": "Enumerate every Blueprint under a content path and report its compile-status bucket (UpToDate/Dirty/Error/Unknown/BeingCreated). Composes find_assets + inspect_blueprint bridge-side. This is a READ-ONLY audit (no recompile triggered); pair with bulk_compile_blueprints to actually fix anything found.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -414,7 +414,7 @@ TOOLS = [
     },
     {
         "name": "inspect_blueprint",
-        "description": "Read parent class, declared variables, and function/event graph names of a Blueprint asset.",
+        "description": "Read parent class, declared variables, function/event graph names, and compile status (UpToDate/Dirty/Error/Unknown/BeingCreated) of a Blueprint asset.",
         "inputSchema": {
             "type": "object",
             "properties": {"path": {"type": "string", "description": "e.g. /Game/Blueprints/BP_MyActor.BP_MyActor"}},
@@ -3954,11 +3954,11 @@ def synthetic_audit_blueprint_compile_status(req_id, args: dict) -> dict:
     READ-ONLY: no compile is triggered. Pair with `bulk_compile_blueprints`
     to actually fix anything found.
 
-    NB: inspect_blueprint currently does NOT return blueprint_status
-    (verified against UE 5.7 Handler_InspectBlueprint.cpp on 2026-05-13).
-    Until the field lands, every scanned BP falls into the `Unknown`
-    bucket. The synthetic still functions; it just always reports
-    Unknown until the C++ handler adds the field.
+    NB: Handler_InspectBlueprint.cpp emits `blueprint_status` as of the
+    PR that closes scorecard follow-up #4 (mirrors the helper already used
+    by Handler_InspectWidgetBlueprint.cpp). Older plugin DLLs that predate
+    the fix will still surface every BP as `Unknown` (defensive fallback)
+    until the host editor is cold-rebuilt against the new handler.
     """
     if not isinstance(args, dict):
         return make_response(req_id, error={
