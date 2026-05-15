@@ -13,9 +13,9 @@ plugin speaks raw JSON-RPC over a local TCP socket (default
 Behaviour:
   - "initialize"             returned synthetically (does NOT hit the UE server)
   - "notifications/*"        consumed silently
-  - "tools/list"             returns a static list of all 100 tools (71
+  - "tools/list"             returns a static list of all 102 tools (71
                              dispatched to the UE plugin's C++ handlers
-                             plus 29 bridge-side synthetic tools served by
+                             plus 31 bridge-side synthetic tools served by
                              SYNTHETIC_TOOLS without crossing the wire as
                              a single UE round-trip)
   - "tools/call"             unpacks {name, arguments} and forwards to the
@@ -1381,6 +1381,37 @@ TOOLS = [
                 "name": {"type": "string", "description": "Actor label or unique name to focus on."},
             },
             "required": ["name"],
+        },
+    },
+    {
+        "name": "marketplace_search",
+        "description": "Search free CC0 asset marketplaces (Polyhaven, AmbientCG) for textures / HDRIs / models matching a keyword and return a normalised list of matches. SYNTHETIC bridge-side handler — fetches the source's public JSON catalog via plain HTTPS (no auth, no API key). Asset files are CC0 (public domain, free for any use including commercial). API-access terms differ from asset terms: the Polyhaven public API at api.polyhaven.com is licensed for non-commercial and academic use only — commercial integrations require a custom license from Poly Haven (https://polyhaven.com/our-api). AmbientCG asset terms are similarly CC0 with their own API ToS. Pair with marketplace_import to actually download and import a chosen result.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search keyword(s). Matched against name, tags, and categories on the source side. Empty string = list popular assets."},
+                "source": {"type": "string", "description": "Marketplace to query. 'polyhaven' (default), 'ambientcg', or 'all' to fan out across both.", "enum": ["polyhaven", "ambientcg", "all"]},
+                "asset_type": {"type": "string", "description": "Asset class filter. 'texture' (default), 'hdri', 'model', or 'all'.", "enum": ["texture", "hdri", "model", "all"]},
+                "limit": {"type": "integer", "description": "Max results to return (default 10, max 50)."},
+            },
+        },
+    },
+    {
+        "name": "marketplace_import",
+        "description": "Download a CC0 asset from a marketplace (Polyhaven in v1) and import it into the project as a UTexture2D via the native import_texture handler. SYNTHETIC bridge-side handler — composes a /files/{slug} catalog lookup, a urllib download to the system tempdir, and a call_ue('import_texture', ...) round-trip. v1 supports texture (diffuse map) and hdri (EXR); model import is parked for v2 (native handler has no mesh-import wrapper today). Asset files: Polyhaven content is CC0 (public domain, no attribution required). API access: the Polyhaven public API is licensed for non-commercial and academic use only — commercial integrations require a custom license from Poly Haven (https://polyhaven.com/our-api).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "Marketplace to import from. Only 'polyhaven' is wired in v1 (ambientcg ships zip archives — v2 work).", "enum": ["polyhaven"]},
+                "slug": {"type": "string", "description": "Source-specific asset identifier (e.g. 'aerial_beach_01'). Obtain via marketplace_search."},
+                "asset_type": {"type": "string", "description": "'texture' (diffuse map only in v1), 'hdri' (EXR/HDR sky), or 'model' (not yet implemented).", "enum": ["texture", "hdri", "model"]},
+                "resolution": {"type": "string", "description": "Asset resolution. Common values: '1k', '2k' (default), '4k', '8k'. Available set depends on the asset; the error message lists what the source actually offers when the request is invalid."},
+                "format": {"type": "string", "description": "File format. Defaults to 'png' for textures and 'exr' for HDRIs. Other accepted values fall back to the source's default if the requested format isn't published."},
+                "dest_path": {"type": "string", "description": "UE package path. Must start with /Game/. Default /Game/Marketplace."},
+                "dest_name": {"type": "string", "description": "Asset name override. Defaults to the slug."},
+                "replace_existing": {"type": "boolean", "description": "Overwrite an existing asset at dest_path/dest_name (default false)."},
+            },
+            "required": ["slug"],
         },
     },
 ]
@@ -5007,6 +5038,486 @@ def synthetic_bulk_fix_redirectors(req_id, args: dict) -> dict:
     return _wrap_tool_result(req_id, body)
 
 
+# ---------------------------------------------------------------------------
+# Marketplace synthetic tools (PR #2)
+#
+# Two bridge-side synthetic tools that surface CC0 / free-to-use 3D assets
+# from public marketplaces (Polyhaven, AmbientCG) without leaving the
+# editor. All endpoints below are public JSON APIs that need no auth and
+# no API key. The bridge fetches catalog metadata via urllib (stdlib —
+# no extra Python dep), then for `marketplace_import` downloads the chosen
+# file to a temp path and calls the native `import_texture` handler to
+# round-trip it into the project as a UTexture2D asset.
+#
+# Licensing:
+#   - Polyhaven: every asset on the platform is CC0 (public domain) —
+#     no attribution required, free for any use including commercial.
+#   - AmbientCG: every asset on the platform is CC0 as well.
+#
+# Scope of v1:
+#   - Textures (color/diffuse map only — full PBR multi-map import is a
+#     v2 enhancement) at user-chosen resolution.
+#   - HDRIs (sky environments) as EXR.
+#   - Models: NOT yet implemented (would need a glTF/FBX import path; the
+#     native `import_texture` only handles UTexture2D-class imports). The
+#     `asset_type=model` path is parked behind a clear "not_implemented"
+#     error so the surface is discoverable for future work.
+#
+# Failure modes intentionally surfaced rather than masked:
+#   - Network unreachable / DNS failure → `network_error` with the
+#     underlying urllib exception in the message.
+#   - HTTP 4xx/5xx → `http_error` with status code.
+#   - Slug not found in source catalog → `not_found`.
+#   - Requested resolution not available for asset → `resolution_unavailable`
+#     with the list of resolutions the source actually offers.
+# ---------------------------------------------------------------------------
+
+
+_MARKETPLACE_USER_AGENT = "UnrealClaudeMCP/0.9.1 (+https://github.com/NAJEMWEHBE/UnrealClaudeMCP)"
+_MARKETPLACE_TIMEOUT_SECS = 30
+
+
+def _marketplace_http_get_json(url: str) -> tuple[dict | list | None, dict | None]:
+    """Plain-HTTPS GET that returns (parsed_json, error_dict).
+
+    On success: (data, None). On any failure: (None, error_dict) shaped for
+    `make_response`. urllib is used because the bridge has no `requests` dep.
+    """
+    import urllib.request
+    import urllib.error
+    req = urllib.request.Request(url, headers={"User-Agent": _MARKETPLACE_USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=_MARKETPLACE_TIMEOUT_SECS) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        return None, {"code": -32603, "message": f"http_error: status={e.code} url={url}: {e.reason}"}
+    except urllib.error.URLError as e:
+        return None, {"code": -32603, "message": f"network_error: url={url}: {e.reason}"}
+    except Exception as e:
+        return None, {"code": -32603, "message": f"fetch_failed: url={url}: {e}"}
+    try:
+        return json.loads(body.decode("utf-8", errors="replace")), None
+    except Exception as e:
+        return None, {"code": -32603, "message": f"json_decode_failed: url={url}: {e}"}
+
+
+def _marketplace_http_download(url: str, dest_path: str) -> dict | None:
+    """Stream a binary URL to dest_path. Returns None on success or an
+    error dict suitable for `make_response`. Atomic-ish: writes to
+    dest_path + ".part" then renames. On any failure mid-download the
+    .part file is removed so it does not orphan in the temp dir."""
+    import urllib.request
+    import urllib.error
+    import os
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return {"code": -32603, "message": f"invalid_download_url: scheme must be https, got '{parsed.scheme or ''}': {url}"}
+    tmp = dest_path + ".part"
+    req = urllib.request.Request(url, headers={"User-Agent": _MARKETPLACE_USER_AGENT})
+    err_result: dict | None = None
+    try:
+        with urllib.request.urlopen(req, timeout=_MARKETPLACE_TIMEOUT_SECS) as resp, open(tmp, "wb") as out:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+    except urllib.error.HTTPError as e:
+        err_result = {"code": -32603, "message": f"http_error: status={e.code} url={url}: {e.reason}"}
+    except urllib.error.URLError as e:
+        err_result = {"code": -32603, "message": f"network_error: url={url}: {e.reason}"}
+    except Exception as e:
+        err_result = {"code": -32603, "message": f"download_failed: url={url}: {e}"}
+    if err_result is not None:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return err_result
+    try:
+        os.replace(tmp, dest_path)
+    except Exception as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return {"code": -32603, "message": f"rename_failed: {tmp} -> {dest_path}: {e}"}
+    return None
+
+
+def _polyhaven_type_for(asset_type: str) -> str | None:
+    """Polyhaven's /assets endpoint expects plural-string type filters:
+    hdris / textures / models / all. The response payload encodes the
+    type as a 0/1/2 int (kept in the inverse table inside
+    `_polyhaven_search` when normalising results)."""
+    return {"hdri": "hdris", "texture": "textures", "model": "models"}.get(asset_type)
+
+
+def _polyhaven_search(query: str, asset_type: str, limit: int) -> tuple[list[dict] | None, dict | None]:
+    type_filter = _polyhaven_type_for(asset_type) if asset_type != "all" else None
+    # Polyhaven's /assets endpoint returns the full catalog scoped by
+    # ?type=<hdris|textures|models|all> (omitted = all types). The
+    # ?search= query parameter is documented but the public API ignores
+    # it and returns the full catalog regardless, so the query is
+    # applied client-side below via AND-token matching across name +
+    # tags + categories + slug, then ranked by download_count desc
+    # before applying the limit.
+    url = "https://api.polyhaven.com/assets"
+    if type_filter is not None:
+        url = url + "?type=" + type_filter
+    data, err = _marketplace_http_get_json(url)
+    if err is not None:
+        return None, err
+    if not isinstance(data, dict):
+        return None, {"code": -32603, "message": "polyhaven: unexpected payload (not a JSON object)"}
+    inv_type = {0: "hdri", 1: "texture", 2: "model"}
+    tokens = [t.lower() for t in (query or "").split() if t]
+    candidates: list[dict] = []
+    for slug, meta in data.items():
+        if not isinstance(meta, dict):
+            continue
+        t = inv_type.get(meta.get("type"), "unknown")
+        entry = {
+            "slug": slug,
+            "name": meta.get("name") or slug,
+            "source": "polyhaven",
+            "asset_type": t,
+            "thumbnail_url": meta.get("thumbnail_url") or "",
+            "tags": meta.get("tags") or [],
+            "categories": meta.get("categories") or [],
+            "description": meta.get("description") or "",
+            "max_resolution": meta.get("max_resolution") or None,
+            "download_count": meta.get("download_count") or 0,
+        }
+        if tokens:
+            haystack = " ".join([
+                slug,
+                str(entry["name"]),
+                " ".join(entry["tags"]),
+                " ".join(entry["categories"]),
+            ]).lower()
+            if not all(tok in haystack for tok in tokens):
+                continue
+        candidates.append(entry)
+    candidates.sort(key=lambda e: e["download_count"], reverse=True)
+    return candidates[:limit], None
+
+
+def _ambientcg_search(query: str, asset_type: str, limit: int) -> tuple[list[dict] | None, dict | None]:
+    # AmbientCG's /full_json endpoint accepts ?q=keyword and ?type=DataType.
+    # DataType values used: "Material" (PBR texture set), "HDRI", "3DModel".
+    type_map = {"texture": "Material", "hdri": "HDRI", "model": "3DModel"}
+    import urllib.parse
+    qparts = [f"limit={min(50, max(1, limit))}", "sort=Popular"]
+    if asset_type != "all":
+        dt = type_map.get(asset_type)
+        if dt:
+            qparts.append(f"type={dt}")
+    if query:
+        qparts.append(f"q={urllib.parse.quote(query)}")
+    url = "https://ambientcg.com/api/v2/full_json?" + "&".join(qparts)
+    data, err = _marketplace_http_get_json(url)
+    if err is not None:
+        return None, err
+    if not isinstance(data, dict):
+        return None, {"code": -32603, "message": "ambientcg: unexpected payload"}
+    found = data.get("foundAssets") or []
+    inv_type = {"Material": "texture", "HDRI": "hdri", "3DModel": "model"}
+    results: list[dict] = []
+    for asset in found[:limit]:
+        if not isinstance(asset, dict):
+            continue
+        results.append({
+            "slug": asset.get("assetId") or "",
+            "name": asset.get("displayName") or asset.get("assetId") or "",
+            "source": "ambientcg",
+            "asset_type": inv_type.get(asset.get("dataType") or "", "unknown"),
+            "thumbnail_url": (asset.get("previewImage") or {}).get("PreviewSphere") or "",
+            "tags": asset.get("tags") or [],
+            "categories": [asset.get("category") or ""] if asset.get("category") else [],
+            "description": asset.get("description") or "",
+        })
+    return results, None
+
+
+def synthetic_marketplace_search(req_id, args: dict) -> dict:
+    """Search free CC0 asset marketplaces (Polyhaven, AmbientCG) for
+    textures / HDRIs / models matching a keyword. Returns a normalised
+    list of asset descriptors so the caller can pick a slug to import
+    via `marketplace_import`."""
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_search: invalid_arguments: arguments must be an object",
+        })
+    query = args.get("query", "")
+    if not isinstance(query, str):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_search: invalid_field: 'query' must be a string when supplied",
+        })
+    source = args.get("source", "polyhaven")
+    if source not in ("polyhaven", "ambientcg", "all"):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_search: invalid_field: 'source' must be one of polyhaven|ambientcg|all",
+        })
+    asset_type = args.get("asset_type", "texture")
+    if asset_type not in ("texture", "hdri", "model", "all"):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_search: invalid_field: 'asset_type' must be one of texture|hdri|model|all",
+        })
+    limit = args.get("limit", 10)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > 50:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_search: invalid_field: 'limit' must be an integer between 1 and 50",
+        })
+
+    results: list[dict] = []
+    errors: list[str] = []
+    if source == "all":
+        polyhaven_limit = max(1, limit - limit // 2)
+        ambientcg_limit = max(0, limit // 2)
+    elif source == "polyhaven":
+        polyhaven_limit = limit
+        ambientcg_limit = 0
+    elif source == "ambientcg":
+        polyhaven_limit = 0
+        ambientcg_limit = limit
+    else:
+        polyhaven_limit = 0
+        ambientcg_limit = 0
+
+    if polyhaven_limit > 0:
+        ph_results, ph_err = _polyhaven_search(query, asset_type, polyhaven_limit)
+        if ph_err is not None:
+            errors.append(f"polyhaven: {ph_err.get('message') or 'unknown'}")
+        elif ph_results:
+            results.extend(ph_results)
+    if ambientcg_limit > 0:
+        ag_results, ag_err = _ambientcg_search(query, asset_type, ambientcg_limit)
+        if ag_err is not None:
+            errors.append(f"ambientcg: {ag_err.get('message') or 'unknown'}")
+        elif ag_results:
+            results.extend(ag_results)
+
+    # If both sources failed AND we have no results, surface the errors.
+    if not results and errors:
+        return make_response(req_id, error={
+            "code": -32603,
+            "message": "marketplace_search: all_sources_failed: " + "; ".join(errors),
+        })
+
+    body: dict = {
+        "ok": True,
+        "query": query,
+        "source": source,
+        "asset_type": asset_type,
+        "limit": limit,
+        "count": len(results),
+        "results": results[:limit],
+    }
+    if errors:
+        body["partial_errors"] = errors
+    return _wrap_tool_result(req_id, body)
+
+
+def _polyhaven_pick_file(files: dict, asset_type: str, resolution: str, fmt: str) -> tuple[str | None, str | None, list[str], dict | None]:
+    """Drill into Polyhaven's /files/{slug} response to pull the URL of
+    the diffuse/HDRI file at the requested resolution + format.
+
+    Returns (download_url, chosen_format, available_resolutions, error).
+    chosen_format is the format actually picked (may differ from the
+    requested fmt when a fallback fires — e.g. caller asked 'png' but
+    only 'jpg' exists). On failure download_url is None.
+    """
+    def _resolution_sort_key(r: str) -> tuple[int, str]:
+        # Polyhaven resolutions are e.g. "1k","2k","4k","8k","16k". Sort
+        # by leading integer so "10k" beats "2k". Fall back to lexical
+        # for anything non-conforming.
+        if r.endswith("k") and r[:-1].isdigit():
+            return (int(r[:-1]), r)
+        return (0, r)
+
+    if asset_type == "hdri":
+        # HDRI files live under "hdri": {"4k": {"exr": {...}, "hdr": {...}}}
+        hdri = files.get("hdri") or {}
+        resolutions = sorted(hdri.keys(), key=_resolution_sort_key)
+        block = hdri.get(resolution)
+        if not isinstance(block, dict):
+            return None, None, resolutions, {"code": -32603, "message": f"resolution_unavailable: '{resolution}' not in available {resolutions}"}
+        # Prefer EXR for HDRI; fall back to HDR.
+        for f in [fmt, "exr", "hdr"]:
+            entry = block.get(f)
+            if isinstance(entry, dict) and "url" in entry:
+                return entry["url"], f, resolutions, None
+        return None, None, resolutions, {"code": -32603, "message": f"format_unavailable: tried {fmt}/exr/hdr in resolution {resolution}"}
+    if asset_type == "texture":
+        # Texture files: top-level keys are map names ("Diffuse", "Normal", etc.)
+        # v1 imports diffuse only.
+        diff = files.get("Diffuse") or files.get("diffuse") or files.get("Color")
+        if not isinstance(diff, dict):
+            return None, None, [], {"code": -32603, "message": "texture_no_diffuse: Polyhaven payload lacks a Diffuse/Color map"}
+        resolutions = sorted(diff.keys(), key=_resolution_sort_key)
+        block = diff.get(resolution)
+        if not isinstance(block, dict):
+            return None, None, resolutions, {"code": -32603, "message": f"resolution_unavailable: '{resolution}' not in available {resolutions}"}
+        for f in [fmt, "png", "jpg"]:
+            entry = block.get(f)
+            if isinstance(entry, dict) and "url" in entry:
+                return entry["url"], f, resolutions, None
+        return None, None, resolutions, {"code": -32603, "message": f"format_unavailable: tried {fmt}/png/jpg in resolution {resolution}"}
+    return None, None, [], {"code": -32603, "message": f"asset_type_unsupported: '{asset_type}' (marketplace_import v1 supports texture + hdri only)"}
+
+
+def synthetic_marketplace_import(req_id, args: dict) -> dict:
+    """Download an asset from a CC0 marketplace (Polyhaven for now) and
+    import it into the project as a UTexture2D via the native
+    `import_texture` handler.
+
+    Composes:
+      1. GET https://api.polyhaven.com/files/{slug} to resolve the
+         per-resolution / per-format download URL.
+      2. urllib download to a temp file under the system tempdir.
+      3. call_ue("import_texture", {source_path, dest_path, dest_name,
+         replace_existing, automated, save}) -- the existing native
+         handler does the UE-side import via the canonical asset import
+         pipeline.
+
+    Models (glTF / FBX) are not yet implemented; the native side has no
+    mesh-import wrapper today. asset_type=model returns a clear
+    not_implemented error so the surface is discoverable.
+    """
+    if not isinstance(args, dict):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_import: invalid_arguments: arguments must be an object",
+        })
+    source = args.get("source", "polyhaven")
+    if source != "polyhaven":
+        # AmbientCG download path uses zipped multi-map archives — v2 work.
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_import: source_unsupported: only 'polyhaven' is wired in v1 (ambientcg ships zip archives, v2 work)",
+        })
+    slug = args.get("slug")
+    if not isinstance(slug, str) or not slug:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_import: invalid_field: 'slug' must be a non-empty string",
+        })
+    asset_type = args.get("asset_type", "texture")
+    if asset_type not in ("texture", "hdri", "model"):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_import: invalid_field: 'asset_type' must be one of texture|hdri|model",
+        })
+    if asset_type == "model":
+        return make_response(req_id, error={
+            "code": -32603,
+            "message": "marketplace_import: not_implemented: model import is parked for v2 (native handler has no mesh-import wrapper today)",
+        })
+    resolution = args.get("resolution", "2k")
+    if not isinstance(resolution, str) or not resolution:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_import: invalid_field: 'resolution' must be a non-empty string (e.g. '1k', '2k', '4k', '8k')",
+        })
+    fmt = args.get("format", "png" if asset_type == "texture" else "exr")
+    if not isinstance(fmt, str) or not fmt:
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_import: invalid_field: 'format' must be a non-empty string",
+        })
+    dest_path = args.get("dest_path", "/Game/Marketplace")
+    if not isinstance(dest_path, str) or not dest_path.startswith("/Game"):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": "marketplace_import: invalid_field: 'dest_path' must start with /Game",
+        })
+    dest_name = args.get("dest_name") or slug
+
+    # 1. Resolve download URL. URL-encode the slug so a value containing
+    # '/', '?', or '#' cannot escape the /files/{slug} path.
+    import urllib.parse as _urlparse
+    files_url = f"https://api.polyhaven.com/files/{_urlparse.quote(slug, safe='')}"
+    files, err = _marketplace_http_get_json(files_url)
+    if err is not None:
+        return make_response(req_id, error=err)
+    if not isinstance(files, dict):
+        return make_response(req_id, error={
+            "code": -32603,
+            "message": f"marketplace_import: unexpected_payload: /files/{slug} did not return a JSON object",
+        })
+    download_url, chosen_fmt, available, pick_err = _polyhaven_pick_file(files, asset_type, resolution, fmt)
+    if pick_err is not None:
+        return make_response(req_id, error=pick_err)
+
+    # 2. Download to temp. Suffix derives from the chosen format (which
+    # may differ from the requested fmt when a fallback fires), so
+    # downstream `import_texture` extension-validation picks the right
+    # importer. Each path-component is allowlist-sanitised to block any
+    # caller-supplied traversal sequences (e.g. "../") from steering the
+    # write outside the temp dir.
+    import tempfile
+    import os
+    def _safe_path_token(s: str, default: str) -> str:
+        cleaned = "".join(c for c in (s or "") if c.isalnum() or c in "._-")
+        return cleaned or default
+    safe_slug = _safe_path_token(slug, "slug")
+    safe_resolution = _safe_path_token(resolution, "res")
+    safe_fmt = _safe_path_token(chosen_fmt or fmt, "bin")
+    suffix = "." + safe_fmt
+    tmp_dir = tempfile.gettempdir()
+    tmp_path = os.path.join(tmp_dir, f"marketplace_{safe_slug}_{safe_resolution}{suffix}")
+    dl_err = _marketplace_http_download(download_url, tmp_path)
+    if dl_err is not None:
+        return make_response(req_id, error=dl_err)
+
+    # 3. Hand off to native import_texture.
+    replace_existing = args.get("replace_existing", False)
+    if not isinstance(replace_existing, bool):
+        return make_response(req_id, error={
+            "code": -32602,
+            "message": f"marketplace_import: invalid_field: 'replace_existing' must be a boolean, got {type(replace_existing).__name__}",
+        })
+    import_params = {
+        "source_path": tmp_path,
+        "dest_path": dest_path,
+        "dest_name": dest_name,
+        "replace_existing": replace_existing,
+        "automated": True,
+        "save": True,
+    }
+    import_resp = call_ue("import_texture", import_params)
+    if "error" in import_resp:
+        upstream = import_resp.get("error") or {}
+        return make_response(req_id, error={
+            "code": upstream.get("code", -32603) or -32603,
+            "message": f"marketplace_import: ue_import_failed: {upstream.get('message') or 'import_texture returned an error'}",
+        })
+    import_result = import_resp.get("result") or {}
+
+    body: dict = {
+        "ok": True,
+        "source": source,
+        "slug": slug,
+        "asset_type": asset_type,
+        "resolution": resolution,
+        "format": fmt,
+        "downloaded_from": download_url,
+        "temp_path": tmp_path,
+        "ue_asset_path": import_result.get("asset_path") or f"{dest_path}/{dest_name}",
+        "available_resolutions": available,
+        "import_result": import_result,
+        "license": "CC0",
+    }
+    return _wrap_tool_result(req_id, body)
+
+
 SYNTHETIC_TOOLS = {
     "wait_for_events": synthetic_wait_for_events,
     "get_camera_transform": synthetic_get_camera_transform,
@@ -5037,6 +5548,8 @@ SYNTHETIC_TOOLS = {
     "bulk_set_console_variables": synthetic_bulk_set_console_variables,
     "inspect_dependency_graph": synthetic_inspect_dependency_graph,
     "bulk_fix_redirectors": synthetic_bulk_fix_redirectors,
+    "marketplace_search": synthetic_marketplace_search,
+    "marketplace_import": synthetic_marketplace_import,
 }
 
 
