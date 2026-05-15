@@ -125,6 +125,7 @@ def test_tool_names_are_unique_and_match_handlers():
         "bulk_fix_redirectors",
         "marketplace_search",
         "marketplace_import",
+        "convert_hdri_to_cubemap",
     }
     assert set(names) == expected
 
@@ -5888,3 +5889,237 @@ def test_polyhaven_pick_pbr_files_dx_normal_fallback():
     urls, _available, err = bridge._polyhaven_pick_pbr_files(files, "2k", "png")
     assert err is None
     assert urls["normal"] == "https://x/nor_dx_2k.png"
+
+
+# ---------------------------------------------------------------------------
+# convert_hdri_to_cubemap (synthetic)
+# ---------------------------------------------------------------------------
+
+def test_convert_hdri_to_cubemap_rejects_non_game_path():
+    """hdri_path must start with /Game/."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 900, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Engine/EngineSky/SunDisc",
+            }},
+        })
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "hdri_path" in resp["error"]["message"]
+
+
+def test_convert_hdri_to_cubemap_rejects_missing_hdri_path():
+    """hdri_path is required."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 901, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {}},
+        })
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "hdri_path" in resp["error"]["message"]
+
+
+def test_convert_hdri_to_cubemap_rejects_disallowed_compression():
+    """Compression must be in the allowlist — keeps caller input from
+    injecting arbitrary enum names into the generated UE Python."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 902, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Game/HDRI/test",
+                "compression": "TC_GRAYSCALE",  # not in HDR allowlist
+            }},
+        })
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "compression" in resp["error"]["message"]
+
+
+def test_convert_hdri_to_cubemap_rejects_bad_cube_size():
+    """cube_size must be int in [16, 8192]."""
+    with patch.object(bridge, "call_ue") as m:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 903, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Game/HDRI/test",
+                "cube_size": 16384,
+            }},
+        })
+    assert m.call_count == 0
+    assert resp["error"]["code"] == -32602
+    assert "cube_size" in resp["error"]["message"]
+
+
+def test_convert_hdri_to_cubemap_rejects_path_injection_in_dest_name():
+    """dest_name is interpolated into a generated UE Python literal —
+    the validator rejects shell-meta characters that could break out."""
+    for bad in ('a/b', 'a"b', "a'b", "a;b", "a\nb"):
+        with patch.object(bridge, "call_ue") as m:
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 904, "method": "tools/call",
+                "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                    "hdri_path": "/Game/HDRI/test",
+                    "dest_name": bad,
+                }},
+            })
+        assert m.call_count == 0, f"call_ue dispatched for bad dest_name={bad!r}"
+        assert resp["error"]["code"] == -32602
+        assert "dest_name" in resp["error"]["message"]
+
+
+def test_convert_hdri_to_cubemap_end_to_end():
+    """Happy path: validates arg defaults + that the generated script is
+    handed off to execute_unreal_python, and that the response body echoes
+    the inputs + reports the resolved cube asset path."""
+    fake_result = {"result": {"ok": True, "output": "CUBE_PATH=/Game/HDRI/test_Cube.test_Cube"}}
+    with patch.object(bridge, "call_ue", return_value=fake_result) as m_ue:
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 905, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Game/HDRI/test",
+                "cube_size": 512,
+                "compression": "TC_HDR_F32",
+            }},
+        })
+    assert "error" not in resp, resp
+    body = json.loads(resp["result"]["content"][0]["text"])
+    assert body["ok"] is True
+    assert body["source_hdri"] == "/Game/HDRI/test"
+    assert body["dest_path"] == "/Game/HDRI"  # default = parent of hdri_path
+    assert body["dest_name"] == "test_Cube"   # default = <basename>_Cube
+    assert body["cube_size"] == 512
+    assert body["compression"] == "TC_HDR_F32"
+    assert body["cube_asset_path"] == "/Game/HDRI/test_Cube.test_Cube"
+    # call_ue called once with execute_unreal_python
+    assert m_ue.call_count == 1
+    call_args = m_ue.call_args[0]
+    assert call_args[0] == "execute_unreal_python"
+    code = call_args[1]["code"]
+    # Generated script must bake in the validated args
+    assert "/Game/HDRI/test" in code
+    assert "TC_HDR_F32" in code
+    assert "RT_SIZE = 512" in code
+
+
+def test_convert_hdri_to_cubemap_propagates_ue_python_error():
+    """If the generated UE Python raises (e.g. hdri_not_found), the
+    synthetic surfaces a structured ue_python_error with the inner output."""
+    fake_result = {"result": {"ok": False, "output": "RuntimeError: hdri_not_found: /Game/Nonexistent"}}
+    with patch.object(bridge, "call_ue", return_value=fake_result):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 906, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Game/Nonexistent",
+            }},
+        })
+    assert "error" in resp
+    assert resp["error"]["code"] == -32603
+    assert "ue_python_error" in resp["error"]["message"]
+    assert "hdri_not_found" in resp["error"]["message"]
+
+
+def test_convert_hdri_to_cubemap_rejects_gameplus_prefix():
+    """dest_path must be '/Game' or start with '/Game/' — '/GameFoo' is rejected."""
+    for bad in ("/GameFoo", "/Gameplay/x", "/Engine/Bar"):
+        with patch.object(bridge, "call_ue") as m:
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 908, "method": "tools/call",
+                "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                    "hdri_path": "/Game/HDRI/test",
+                    "dest_path": bad,
+                }},
+            })
+        assert m.call_count == 0, f"call_ue dispatched for bad dest_path={bad!r}"
+        assert resp["error"]["code"] == -32602
+        assert "dest_path" in resp["error"]["message"]
+
+
+def test_convert_hdri_to_cubemap_rejects_traversal_segments():
+    """dest_path must not contain '.' or '..' segments."""
+    for bad in ("/Game/../Foo", "/Game/./Foo", "/Game/Foo/..", "/Game/Foo/.."):
+        with patch.object(bridge, "call_ue") as m:
+            resp = bridge.handle({
+                "jsonrpc": "2.0", "id": 909, "method": "tools/call",
+                "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                    "hdri_path": "/Game/HDRI/test",
+                    "dest_path": bad,
+                }},
+            })
+        assert m.call_count == 0, f"call_ue dispatched for bad dest_path={bad!r}"
+        assert resp["error"]["code"] == -32602
+
+
+def test_convert_hdri_to_cubemap_generated_script_uses_hdr_capture_source():
+    """Capture source must be SCS_SCENE_COLOR_HDR_NO_ALPHA so HDR is preserved."""
+    fake_result = {"result": {"ok": True, "output": "CUBE_PATH=/Game/HDRI/test_Cube.test_Cube"}}
+    with patch.object(bridge, "call_ue", return_value=fake_result) as m_ue:
+        bridge.handle({
+            "jsonrpc": "2.0", "id": 910, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Game/HDRI/test",
+            }},
+        })
+    code = m_ue.call_args[0][1]["code"]
+    assert "SCS_SCENE_COLOR_HDR_NO_ALPHA" in code
+    assert "SCS_FINAL_COLOR_LDR" not in code
+
+
+def test_convert_hdri_to_cubemap_generated_script_uses_unique_tag():
+    """Two consecutive calls must use different temp asset names (per-call
+    tag). Prevents concurrent invocations from racing over fixed names."""
+    fake_result = {"result": {"ok": True, "output": "CUBE_PATH=/Game/HDRI/test_Cube.test_Cube"}}
+    seen_tags = set()
+    with patch.object(bridge, "call_ue", return_value=fake_result) as m_ue:
+        for i in range(3):
+            bridge.handle({
+                "jsonrpc": "2.0", "id": 911 + i, "method": "tools/call",
+                "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                    "hdri_path": "/Game/HDRI/test",
+                }},
+            })
+    for call in m_ue.call_args_list:
+        code = call[0][1]["code"]
+        # Extract the tag literal — it's on the TAG = ... line.
+        for line in code.splitlines():
+            if line.startswith("TAG = "):
+                seen_tags.add(line.strip())
+                break
+    assert len(seen_tags) == 3, f"expected 3 distinct tags, got {seen_tags}"
+
+
+def test_convert_hdri_to_cubemap_generated_script_has_try_finally_cleanup():
+    """Cleanup must run via try/finally so a mid-script failure doesn't
+    strand temp actors + assets."""
+    fake_result = {"result": {"ok": True, "output": "CUBE_PATH=/Game/HDRI/test_Cube.test_Cube"}}
+    with patch.object(bridge, "call_ue", return_value=fake_result) as m_ue:
+        bridge.handle({
+            "jsonrpc": "2.0", "id": 914, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Game/HDRI/test",
+            }},
+        })
+    code = m_ue.call_args[0][1]["code"]
+    assert "try:" in code and "finally:" in code
+    # Cleanup happens inside finally, so destroy_actor / delete_asset
+    # appear after the finally line.
+    finally_idx = code.index("finally:")
+    tail = code[finally_idx:]
+    assert "destroy_actor" in tail
+    assert "delete_asset" in tail
+
+
+def test_convert_hdri_to_cubemap_propagates_call_ue_error():
+    """Upstream call_ue error (e.g. UE not reachable) passes through
+    as ue_exec_failed."""
+    fake_err = {"error": {"code": -32099, "message": "UE server not reachable"}}
+    with patch.object(bridge, "call_ue", return_value=fake_err):
+        resp = bridge.handle({
+            "jsonrpc": "2.0", "id": 907, "method": "tools/call",
+            "params": {"name": "convert_hdri_to_cubemap", "arguments": {
+                "hdri_path": "/Game/HDRI/test",
+            }},
+        })
+    assert "error" in resp
+    assert "ue_exec_failed" in resp["error"]["message"]
