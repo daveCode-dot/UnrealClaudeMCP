@@ -193,6 +193,32 @@ runs `RerunConstructionScripts` after attaching, so construction-script-driven a
 with the new component in place. Supplying a duplicate `component_name` is not explicitly documented —
 UE auto-suffixes the FName to avoid collisions; use distinct names to avoid ambiguity.
 
+## Python execution modes
+
+`execute_unreal_python` is the escape hatch, but it is one of four ways to run `unreal.*` Python.
+Pick by state and source:
+
+| Mode | Tool | State | Use it when |
+| --- | --- | --- | --- |
+| One-shot | `execute_unreal_python` | none (fresh globals each call) | a quick ad-hoc snippet |
+| Persistent REPL | `exec_python_persistent` (+ `reset_python_state`) | **persists** across calls | building up vars / imports / defs over several turns |
+| From file | `run_python_file` | none | a non-trivial script — skips all the JSON string-escaping pain |
+| Selection-bound | `apply_python_to_selection` | none | operating on the editor's current selection |
+
+`exec_python_persistent` keeps variables, imports, and function/class defs visible in the next call
+(shared globals dict with the editor's Python console); `reset_python_state` wipes user-defined names
+(names starting with `_` are kept, and explicit imports like `import unreal` are cleared — re-import
+afterwards). `apply_python_to_selection` pre-binds `selection` (selected level actors) and
+`selected_assets` (selected content-browser assets) so you skip the lookup boilerplate.
+
+**Output-capture caveat (all four):** ExecuteFile mode does not return stdout or the eval result.
+Round-trip values the same way as the escape hatch — emit a UUID-tagged
+`unreal.log("__UCMCP__<uuid>__<json>__END__")` marker and read it back with `get_log_lines`.
+
+Audio assets have dedicated read-only inspectors that mirror the `inspect_asset` shape:
+`inspect_sound_cue`, `inspect_sound_wave`, `inspect_sound_attenuation`, `inspect_sound_class`,
+`inspect_sound_submix`, `inspect_audio_bus`, and `inspect_metasound`.
+
 ---
 
 ## UE 5.x behavior notes (caller-relevant)

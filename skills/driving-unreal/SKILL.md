@@ -78,7 +78,8 @@ These rules matter more than any single recipe. Internalize them.
   `unreal.log("__UCMCP__<uuid>__<json>__END__")` and read it with `get_log_lines`. Two struct traps
   when building Python: `unreal.Rotator` positional args are **(roll, pitch, yaw)** and
   `unreal.Color` is **BGRA** — never construct positionally; build an empty struct and assign by
-  property name (`r = unreal.Rotator(); r.pitch = ...; r.yaw = ...; r.roll = ...`).
+  property name (`r = unreal.Rotator(); r.pitch = ...; r.yaw = ...; r.roll = ...`). Three sibling
+  execution modes (persistent REPL, from-file, selection-bound) are compared in reference.md.
 
 ## Workflow index (full recipes in reference.md)
 

@@ -59,10 +59,11 @@ NON_TOOL_TOKENS = {
     # error codes returned by pie_control action=start/stop
     "pie_already_active",
     "pie_not_active",
-    # response / return fields
+    # response / return fields + injected locals
     "tick_resolution",
     "is_playing",
     "is_simulating",
+    "selected_assets",
     # anti-example: the docs explicitly state this tool does NOT exist
     # (the real entry point is register_subscription)
     "start_event_subscription",
