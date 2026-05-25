@@ -200,10 +200,10 @@ Pick by state and source:
 
 | Mode | Tool | State | Use it when |
 | --- | --- | --- | --- |
-| One-shot | `execute_unreal_python` | none (fresh globals each call) | a quick ad-hoc snippet |
-| Persistent REPL | `exec_python_persistent` (+ `reset_python_state`) | **persists** across calls | building up vars / imports / defs over several turns |
-| From file | `run_python_file` | none | a non-trivial script — skips all the JSON string-escaping pain |
-| Selection-bound | `apply_python_to_selection` | none | operating on the editor's current selection |
+| one-shot | `execute_unreal_python` | none (fresh globals each call) | a quick ad-hoc snippet |
+| persistent REPL | `exec_python_persistent` (+ `reset_python_state`) | **persists** across calls | building up vars / imports / defs over several turns |
+| from file | `run_python_file` | none | a non-trivial script — skips all the JSON string-escaping pain |
+| selection-bound | `apply_python_to_selection` | none | operating on the editor's current selection |
 
 `exec_python_persistent` keeps variables, imports, and function/class defs visible in the next call
 (shared globals dict with the editor's Python console); `reset_python_state` wipes user-defined names
@@ -211,13 +211,9 @@ Pick by state and source:
 afterwards). `apply_python_to_selection` pre-binds `selection` (selected level actors) and
 `selected_assets` (selected content-browser assets) so you skip the lookup boilerplate.
 
-**Output-capture caveat (all four):** ExecuteFile mode does not return stdout or the eval result.
-Round-trip values the same way as the escape hatch — emit a UUID-tagged
-`unreal.log("__UCMCP__<uuid>__<json>__END__")` marker and read it back with `get_log_lines`.
-
-Audio assets have dedicated read-only inspectors that mirror the `inspect_asset` shape:
-`inspect_sound_cue`, `inspect_sound_wave`, `inspect_sound_attenuation`, `inspect_sound_class`,
-`inspect_sound_submix`, `inspect_audio_bus`, and `inspect_metasound`.
+**Output-capture caveat (all four):** None of these modes return stdout or expression results
+directly. Round-trip values by emitting a UUID-tagged
+`unreal.log("__UCMCP__<uuid>__<json>__END__")` marker and reading it back with `get_log_lines`.
 
 ---
 
@@ -238,5 +234,6 @@ These shape how you call the tools — not internal implementation you control.
 | `compile_mod_pak` | **Blocking** RunUAT call (up to ~30 min) — returns no task id, not pollable | Wait for the tool to return; tune `timeout_sec` (default 1800) |
 | `pie_control` start/stop are async | Session isn't live (or torn down) on return — they defer to the next tick | Read back with `action=query`; don't infer state from the start/stop return |
 | `load_level_by_path` needs an exact package path | A wrong/partial path fails to load | `list_levels` first (optional `path_under` / `name_contains`) to discover the path |
+| Audio asset inspection | `inspect_asset` does not surface audio-specific metadata | Use dedicated read-only inspectors: `inspect_sound_cue`, `inspect_sound_wave`, `inspect_sound_attenuation`, `inspect_sound_class`, `inspect_sound_submix`, `inspect_audio_bus`, `inspect_metasound` |
 
 When any tool name here disagrees with live `list_tools`, the live catalog wins — update this file.
