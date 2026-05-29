@@ -76,3 +76,17 @@ HDMediaCamPlugin/
 *.blend1
 /blender-exports/
 /asset-src/
+
+# Local AEGIS maintainer tooling — NOT part of the public plugin. These are
+# fork-side automation/state artifacts that must never reach the upstream tree:
+#   - babysit cascade automation + its state/stop files (push PRs after cooldown)
+#   - .run/ orchestration checkpoints from parallel-AI dispatch runs
+#   - CONTEXTO-SESION-* per-session continuity notes
+#   - PROJECT.md / STATUS.md local maintainer contract docs
+/.babysit-state.json
+/.babysit-stop
+/scripts/babysit_cascade.py
+/.run/
+/CONTEXTO-SESION-*.md
+/PROJECT.md
+/STATUS.md
